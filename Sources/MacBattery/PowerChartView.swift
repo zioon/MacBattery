@@ -486,14 +486,14 @@ private struct ChartDraw {
         // 左轴 = 百分比（如果启用百分比系列）
         if !series.filter({ $0.axis == .percent }).isEmpty {
             for y in yTicks(percentRange.lowerBound, percentRange.upperBound) {
-                let text = Text(formatY(y)).font(.system(size: 9)).foregroundStyle(.gray)
+                let text = Text(formatY(y)).font(.system(size: 9)).foregroundColor(.gray)
                 ctx.draw(text, at: CGPoint(x: plot.minX - 6, y: percentY(y)), anchor: .trailing)
             }
         }
         // 右轴 = 真实数值
         if hasValueSeries {
             for y in yTicks(valueMin, valueMax) {
-                let text = Text(formatY(y)).font(.system(size: 9)).foregroundStyle(.gray)
+                let text = Text(formatY(y)).font(.system(size: 9)).foregroundColor(.gray)
                 ctx.draw(text, at: CGPoint(x: plot.maxX + 6, y: valueY(y)), anchor: .leading)
             }
         }
@@ -503,7 +503,7 @@ private struct ChartDraw {
             let xx = timeX(tick)
             if xx < plot.minX || xx > plot.maxX { continue }
             let date = Date(timeIntervalSince1970: tick)
-            let text = Text(formatter.string(from: date)).font(.system(size: 9)).foregroundStyle(.gray)
+            let text = Text(formatter.string(from: date)).font(.system(size: 9)).foregroundColor(.gray)
             ctx.draw(text, at: CGPoint(x: xx, y: plot.maxY + 12), anchor: .top)
         }
     }

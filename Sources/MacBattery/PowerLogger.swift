@@ -91,7 +91,7 @@ final class PowerLogger: ObservableObject {
 }
 
 /// 非隔离的 CSV 持久化（在后台串行队列使用，全部 self-contained）。
-private nonisolated final class PowerLogStore {
+private final class PowerLogStore {
 
     private let ioQueue = DispatchQueue(label: "MacBattery.Logger.io", qos: .utility)
     private var handle: FileHandle?
