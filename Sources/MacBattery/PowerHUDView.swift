@@ -67,8 +67,8 @@ struct PowerHUDView: View {
                         .trim(from: 0, to: progress)
                         .stroke(levelColor,
                                 style: StrokeStyle(lineWidth: ringWidth, lineCap: .round))
-                        .blur(radius: 2.5 * scale)
-                        .opacity(breathing ? 1.0 : 0.22)
+                        .blur(radius: 2 * scale)
+                        .opacity(breathing ? 0.6 : 0.22)
                 }
 
                 // 电量进度（随电量变色 + 充电时外发光）
@@ -80,7 +80,7 @@ struct PowerHUDView: View {
                         style: StrokeStyle(lineWidth: ringWidth, lineCap: .round)
                     )
                     .shadow(color: isCharging ? levelColor.opacity(0.9) : .clear,
-                            radius: breathing ? 3.5 * scale : 1 * scale)
+                            radius: breathing ? 2 * scale : 0.8 * scale)
 
                 // 充电时沿环流动的高光段
                 if isCharging {
@@ -127,9 +127,8 @@ struct PowerHUDView: View {
                     Image(systemName: isCharging ? "bolt.fill" : "bolt.badge.clock")
                         .font(.system(size: 6.5 * scale, weight: .bold))
                         .foregroundColor(isCharging ? .yellow : .white.opacity(0.5))
-                        .shadow(color: isCharging ? Color.yellow.opacity(0.9) : .clear,
-                                radius: breathing ? 3 * scale : 0.5 * scale)
-                        .scaleEffect(isCharging && breathing ? 1.15 : 1.0)
+                        .shadow(color: isCharging ? Color.yellow.opacity(0.7) : .clear,
+                                radius: breathing ? 1.5 * scale : 0.4 * scale)
                     Text(chargeValueText)
                         .font(.system(size: 8.5 * scale, weight: .semibold, design: .rounded))
                         .foregroundColor(.white.opacity(0.9))
@@ -244,10 +243,13 @@ private struct ChargingSweep: View {
     }
 
     private func segment(from: CGFloat, to: CGFloat) -> some View {
+        // 用 butt（平头）线帽：绕回双段会跨过环形路径的闭合点（起点），
+        // 若用 round 圆帽会在闭合点叠加出一坨、与充电环脱轨；
+        // 平头使两段在闭合点处平齐相接，高光全程贴合环轨且长度恒定。
         RoundedRectangle(cornerRadius: radius)
             .trim(from: from, to: to)
             .stroke(Color.white.opacity(0.85),
-                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
+                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt))
             .blur(radius: 0.8 * scale)
     }
 }
