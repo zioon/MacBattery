@@ -3,16 +3,13 @@ import SwiftUI
 /// 置顶挂件 UI：外层矩形充电环（完整底环 + 电量进度）环绕中间两行功率；
 /// 内层一个整体的内环承接 CPU / RAM，上半环为 CPU、下半环为 RAM，各按占用率填充；
 /// 内环外壁与充电环内壁完全重合（几何上严丝合缝）。
-/// 充电环随电量平滑变色；充电时沿环流动高光，且充电图标周期性发光（环本身不晃动）。
+/// 充电环随电量平滑变色；充电时充电图标保持静态高亮、无任何晃动 / 流动特效。
 /// 整体尺寸随 `scale` 缩放（基础宽高会随 scale 变化）。
 struct PowerHUDView: View {
 
     @ObservedObject var monitor: PowerMonitor
     /// 缩放系数（0.8 / 1.0 / 1.3…）
     var scale: CGFloat = 1.0
-
-    /// 充电图标发光脉动相位（仅充电时往复动画）。
-    @State private var breathing = false
 
     /// 可见底盘边长（scale=1 时为 58×58）。
     private var contentSize: CGFloat { 58 }
@@ -71,13 +68,6 @@ struct PowerHUDView: View {
                     )
                     .shadow(color: isCharging ? levelColor.opacity(0.9) : Color.clear,
                             radius: 1.5 * scale)
-
-                // 充电时沿环流动的高光
-                if isCharging {
-                    ChargingSweep(radius: ringStrokeRadius,
-                                  lineWidth: ringWidth,
-                                  scale: scale)
-                }
             }
             .padding(ringWidth / 2)
 
@@ -117,11 +107,9 @@ struct PowerHUDView: View {
                     Image(systemName: isCharging ? "bolt.fill" : "bolt.badge.clock")
                         .font(.system(size: 6.5 * scale, weight: .bold))
                         .foregroundColor(isCharging ? .yellow : .white.opacity(0.5))
-                        // 充电时图标周期性发光：只让图标亮暗脉动，充电环保持静止不晃动
-                        .shadow(color: isCharging
-                                    ? Color.yellow.opacity(breathing ? 1.0 : 0.25)
-                                    : Color.clear,
-                                radius: (breathing ? 3.0 : 0.6) * scale)
+                        // 充电时图标静态高亮，不做任何脉动 / 晃动
+                        .shadow(color: isCharging ? Color.yellow.opacity(0.7) : Color.clear,
+                                radius: 1.0 * scale)
                     Text(chargeValueText)
                         .font(.system(size: 8.5 * scale, weight: .semibold, design: .rounded))
                         .foregroundColor(.white.opacity(0.9))
@@ -135,24 +123,9 @@ struct PowerHUDView: View {
         // 四周留出透明余量，供外发光扩散（可见底盘仍为 contentSize×contentSize）
         .padding(glowMargin)
         .frame(width: baseWidth, height: baseHeight)
-        // 电量变化时颜色平滑过渡；插拔电源时特效淡入淡出
+        // 电量变化时颜色平滑过渡；插拔电源时辉光淡入淡出（均为颜色过渡，无几何运动）
         .animation(.easeInOut(duration: 0.8), value: monitor.batteryPercent)
         .animation(.easeInOut(duration: 0.3), value: isCharging)
-        .onAppear { updateEffects() }
-        .onChange(of: isCharging) { _ in updateEffects() }
-    }
-
-    /// 仅在充电时开启发光脉动（只驱动充电图标），不充电时不跑动画，避免空转徒增功耗。
-    private func updateEffects() {
-        if isCharging {
-            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
-                breathing = true
-            }
-        } else {
-            withAnimation(.easeInOut(duration: 0.35)) {
-                breathing = false
-            }
-        }
     }
 
     // MARK: - 电量配色
@@ -198,48 +171,7 @@ struct PowerHUDView: View {
     }
 }
 
-/// 充电时沿环流动的高光。
-///
-/// 直接用「充电环自身的描边 + 角向渐变（AngularGradient）」来画，而不是另画一段弧：
-/// 高光就是环的描边本身，因此必然与环严丝合缝地重合；
-/// 且角向渐变天然首尾相接，不存在路径闭合点，也就不会出现闭合点处错位 / 长度变化的问题。
-private struct ChargingSweep: View {
-    var radius: CGFloat
-    var lineWidth: CGFloat
-    var scale: CGFloat
 
-    /// 绕行一圈的时长（秒）。
-    private let period: Double = 1.6
-
-    var body: some View {
-        TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { context in
-            let sweep = sweepAngle(at: context.date)
-            RoundedRectangle(cornerRadius: radius)
-                .stroke(
-                    AngularGradient(
-                        gradient: Gradient(stops: [
-                            .init(color: .white.opacity(0), location: 0.00),
-                            .init(color: .white.opacity(0), location: 0.42),
-                            .init(color: .white.opacity(0.85), location: 0.50),
-                            .init(color: .white.opacity(0), location: 0.58),
-                            .init(color: .white.opacity(0), location: 1.00)
-                        ]),
-                        center: .center,
-                        startAngle: .degrees(sweep - 180),
-                        endAngle: .degrees(sweep + 180)
-                    ),
-                    lineWidth: lineWidth
-                )
-                .blur(radius: 0.6 * scale)
-        }
-    }
-
-    /// 当前高光所在的角向位置（度），由时钟直接求值，不经过 SwiftUI 隐式动画。
-    private func sweepAngle(at date: Date) -> Double {
-        let t = date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period)
-        return t / period * 360
-    }
-}
 
 /// 圆角矩形环路径，但起点定在「左边缘中点」：
 /// 先逆时针经左边缘上行、跨过顶边到右边缘中点（上半环 = trim 0…0.5），
