@@ -1,17 +1,27 @@
 #!/bin/bash
-# 一次性安装 MacBattery 的 root helper（用于读取真实整机功耗）。
-# 用法：在项目根目录执行  sudo ./Scripts/install_helper.sh
+# 安装 MacBattery 的 root helper（用于读取真实整机功耗）。
+#
+# 用法：进入【包含 install_helper.sh 和 macbattery-helper 的目录】（如 DMG 挂载点），
+#       执行：
+#           sudo ./install_helper.sh
+#       或（若无执行权限）：
+#           sudo bash ./install_helper.sh
+#
+# 说明：本脚本直接使用同目录下的 macbattery-helper 二进制，无需编译。
 set -e
-cd "$(dirname "$0")/.."
 
-echo "== 编译 root helper =="
-swift build -c release --target MacBatteryHelper
-
-BIN=".build/release/MacBatteryHelper"
+DIR="$(cd "$(dirname "$0")" && pwd)"
+BIN="$DIR/macbattery-helper"
 DEST="/Library/PrivilegedHelperTools/macbattery-helper"
 PLIST="/Library/LaunchDaemons/com.zioon.macbattery.helper.plist"
 
-echo "== 写入 /Library（需要输入密码） =="
+if [ ! -f "$BIN" ]; then
+  echo "错误：未在当前目录找到 $BIN"
+  echo "请先 cd 到同时包含 install_helper.sh 和 macbattery-helper 的目录再运行。"
+  exit 1
+fi
+
+echo "== 写入系统目录（需要输入密码） =="
 sudo mkdir -p /Library/PrivilegedHelperTools
 sudo cp "$BIN" "$DEST"
 sudo chown root:wheel "$DEST"
@@ -32,9 +42,7 @@ sudo tee "$PLIST" >/dev/null <<'EOF'
 	<true/>
 	<key>KeepAlive</key>
 	<true/>
-	<key>StandardOutPath</key>
-	<string>/tmp/macbattery-helper.log</string>
-	<key>StandardErrorPath</key>
+	<key>StandardErrPath</key>
 	<string>/tmp/macbattery-helper.log</string>
 </dict>
 </plist>
@@ -47,6 +55,7 @@ sudo chmod 644 "$PLIST"
 sudo launchctl bootout system "$PLIST" 2>/dev/null || true
 sudo launchctl bootstrap system "$PLIST" 2>/dev/null || sudo launchctl load "$PLIST"
 
+sleep 2
 echo ""
 echo "== 完成 =="
 echo "root helper 已启动：/Library/PrivilegedHelperTools/macbattery-helper"
