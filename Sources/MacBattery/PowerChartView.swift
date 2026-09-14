@@ -69,6 +69,8 @@ struct PowerChartView: View {
 
     private var minView: TimeInterval { 15 }          // 最小可见跨度
     private var maxView: TimeInterval { 24 * 3600 }   // 最大可见跨度
+    /// 底部快捷时间窗口预设（秒）：5 分钟 / 30 分钟 / 1 小时 / 24 小时。
+    static let windowPresets: [TimeInterval] = [5 * 60, 30 * 60, 60 * 60, 24 * 60 * 60]
     private let percentRange: ClosedRange<Double> = 0...100
 
     init(logger: PowerLogger) {
@@ -89,8 +91,15 @@ struct PowerChartView: View {
                 Text("左轴：%  ·  右轴：W / V / A")
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                Button("适合窗口") { fitToAll() }
-                    .font(.caption)
+                // 时间窗口快捷切换：5m / 30m / 1h / 24h / 全部（当前选中项高亮）。
+                windowPresetButton("5m", Self.windowPresets[0])
+                windowPresetButton("30m", Self.windowPresets[1])
+                windowPresetButton("1h", Self.windowPresets[2])
+                windowPresetButton("24h", Self.windowPresets[3])
+                Button("全部") { fitToAll() }
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(activeWindowPreset == nil ? .semibold : .regular))
+                    .foregroundColor(activeWindowPreset == nil ? Color.accentColor : .primary)
             }
         }
         .padding(12)
@@ -244,15 +253,13 @@ struct PowerChartView: View {
         let endE = endTime.timeIntervalSince1970
         let (start, end) = visibleIndexRange()
 
-        let count = max(0, end - start)
-        let visible = count > 0 ? Array(logger.samples[start..<end]) : []
-        // 按像素降采样，避免缩放小时绘制过多点。
-        let stride = max(1, Int(ceil(Double(count) / Double(plot.plotW))))
-
         // 右轴（真实数值）范围由 refreshRightAxis() 维护：刻度取整 + 迟滞，避免随采样频繁跳动。
+        // 曲线点由 ChartDraw 对 samples[sampleStart..<sampleEnd] 分桶平均生成，
+        // 不在此复制可见数组，避免长时窗口（如 24h）每帧复制十几万样本。
         return ChartDraw(
-            visibleSamples: visible,
-            drawStride: stride,
+            samples: logger.samples,
+            sampleStart: start,
+            sampleEnd: end,
             startE: startE,
             endE: endE,
             percentRange: percentRange,
@@ -455,6 +462,31 @@ struct PowerChartView: View {
         refreshRightAxis()
     }
 
+    /// 当前命中的窗口预设（未命中则返回 nil，视为「全部」选中）。
+    private var activeWindowPreset: TimeInterval? {
+        Self.windowPresets.first { $0 == timeRange }
+    }
+
+    /// 底部时间窗口按钮。
+    private func windowPresetButton(_ title: String, _ seconds: TimeInterval) -> some View {
+        let active = activeWindowPreset == seconds
+        return Button(title) { setWindow(seconds) }
+            .buttonStyle(.plain)
+            .font(.caption.weight(active ? .semibold : .regular))
+            .foregroundColor(active ? Color.accentColor : .primary)
+    }
+
+    /// 切换到指定的时间窗口：回到实时跟随、复位右轴自适应并立即适配。
+    private func setWindow(_ seconds: TimeInterval) {
+        timeRange = min(max(seconds, minView), maxView)
+        followLive = true
+        // 右缘贴住最新样本（比 Date() 更精确，避免右缘超前于数据）。
+        if let t = logger.samples.last?.t { endTime = t }
+        autoRight = true
+        rightAxisInitialized = false
+        refreshRightAxis()
+    }
+
     private func timeText(_ seconds: TimeInterval) -> String {
         if seconds < 60 { return "\(Int(seconds)) 秒" }
         if seconds < 3600 { return "\(Int(seconds / 60)) 分钟" }
@@ -512,8 +544,9 @@ private struct PlotRect {
 // MARK: - 实际绘图对象
 
 private struct ChartDraw {
-    let visibleSamples: [PowerSample]
-    let drawStride: Int
+    let samples: [PowerSample]
+    let sampleStart: Int
+    let sampleEnd: Int
     let startE: Double
     let endE: Double
     let percentRange: ClosedRange<Double>
@@ -530,11 +563,14 @@ private struct ChartDraw {
 
     var hasValueSeries: Bool { series.contains { $0.axis == .value } }
 
-    /// 把可视样本降采样后，分别按主/副轴换算成各系列的 (x, y) 点。
+    /// 把可视样本按像素分桶取平均（每桶一个点）后，分别按主/副轴换算成各系列的 (x, y) 点。
+    /// 相比逐点抽稀，分桶平均对 CPU / 整机功耗这类 0.5s 高频抖动的数据更稳定：
+    /// 长时间窗下每个像素代表一段时间窗的均值，毛刺被抹平、趋势不丢失。
     func buildBands() -> (percent: [ActiveBand], value: [ActiveBand]) {
         let plotW = plot.plotW, plotH = plot.plotH
         let minX = plot.minX, maxY = plot.maxY
         let span = max(1e-9, endE - startE)
+        let bucketCount = max(1, Int(plotW))   // 每像素一桶
 
         var percentBands: [ActiveBand] = []
         var valueBands: [ActiveBand] = []
@@ -542,13 +578,24 @@ private struct ChartDraw {
         let vSpan = max(1e-9, valueMax - valueMin)
 
         for def in series {
+            // 先按时间把每个样本归入对应像素桶并累加，桶内取均值。
+            var sums = [Double](repeating: 0, count: bucketCount)
+            var counts = [Int](repeating: 0, count: bucketCount)
+            var i = sampleStart
+            while i < sampleEnd {
+                let s = samples[i]
+                let frac = (s.t.timeIntervalSince1970 - startE) / span
+                var b = Int(frac * Double(bucketCount))
+                if b < 0 { b = 0 } else if b >= bucketCount { b = bucketCount - 1 }
+                sums[b] += def.dsp(s)
+                counts[b] += 1
+                i += 1
+            }
             var pts: [CGPoint] = []
-            pts.reserveCapacity(visibleSamples.count / drawStride + 2)
-            var i = 0
-            while i < visibleSamples.count {
-                let s = visibleSamples[i]
-                let x = minX + (s.t.timeIntervalSince1970 - startE) / span * plotW
-                let v = def.dsp(s)
+            pts.reserveCapacity(bucketCount + 2)
+            for b in 0..<bucketCount where counts[b] > 0 {
+                let x = minX + (Double(b) + 0.5) / Double(bucketCount) * plotW
+                let v = sums[b] / Double(counts[b])
                 let y: Double
                 switch def.axis {
                 case .percent:
@@ -559,7 +606,6 @@ private struct ChartDraw {
                     y = maxY - normalized * plotH
                 }
                 pts.append(CGPoint(x: x, y: max(plot.minY, min(plot.maxY, y))))
-                i += drawStride
             }
             if let first = pts.first { pts.insert(CGPoint(x: minX, y: first.y), at: 0) }
             if let last = pts.last { pts.append(CGPoint(x: plot.minX + plotW, y: last.y)) }

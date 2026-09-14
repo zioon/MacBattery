@@ -87,19 +87,33 @@ enum BatteryReader {
     }
 
     /// 读取电池健康信息（当前最大容量 / 设计容量 / 健康度 / 循环次数）。
-    /// 关键容量值任一不可读（≤0）时返回 nil，表示数据暂不可用。
+    /// 部分机型 AppleSmartBattery 的容量键可能有缺省（如 `DesignCapacity` 为 0），
+    /// 因此只要「当前最大容量」可读就返回记录；健康度仅在设计容量可读时计算，否则记为 0。
     static func health() -> BatteryHealth? {
         let service = currentService()
         guard service != 0, let props = readProperties(service) else { return nil }
-        let maxCap = intValue(props["AppleRawMaxCapacity"])
-        let designCap = intValue(props["DesignCapacity"])
-        guard maxCap > 0, designCap > 0 else { return nil }
+        // 当前最大容量：优先 AppleRawMaxCapacity，缺省时退回 MaxCapacity。
+        let maxCap = firstPositive(intValue(props["AppleRawMaxCapacity"]),
+                                   intValue(props["MaxCapacity"]))
+        guard maxCap > 0 else { return nil }
+        // 设计容量：优先 DesignCapacity，缺省时退回 MaxCapacity（作为粗略退路）。
+        let designCap = firstPositive(intValue(props["DesignCapacity"]),
+                                      intValue(props["MaxCapacity"]))
+        let health: Double = designCap > 0
+            ? Double(maxCap) / Double(designCap) * 100.0
+            : 0
         return BatteryHealth(
             maxCapacity: maxCap,
             designCapacity: designCap,
-            healthPercent: Double(maxCap) / Double(designCap) * 100.0,
+            healthPercent: health,
             cycleCount: intValue(props["CycleCount"])
         )
+    }
+
+    /// 返回第一个 >0 的值；全部 ≤0 时返回 0。
+    private static func firstPositive(_ a: Int, _ b: Int) -> Int {
+        if a > 0 { return a }
+        return b > 0 ? b : 0
     }
 
     /// 用 IOPS 官方电源源判定是否在充电（与系统菜单栏电池图标一致，插拔即时）。
