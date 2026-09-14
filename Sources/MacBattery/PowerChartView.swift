@@ -31,6 +31,16 @@ struct PowerChartView: View {
     /// 右轴是否跟随数据自适应。
     @State private var autoRight = true
 
+    /// 拖拽基准（手势开始时记录，保证平移严格跟手、不累积偏差）。
+    @GestureState private var dragBase: DragBase?
+
+    /// 一次拖拽的起始视口。
+    private struct DragBase {
+        let endTime: Date
+        let rightMin: Double
+        let rightMax: Double
+    }
+
     // MARK: 系列开关
 
     @State private var showBattery = true
@@ -133,10 +143,15 @@ struct PowerChartView: View {
                     handleScroll(dx: dx, dy: dy, option: option, plot: plot)
                 }
 
-                // 拖拽平移。
+                // 拖拽平移：基于手势起点的绝对跟随，1:1 跟随鼠标，不累加漂移。
                 Color.clear
                     .contentShape(Rectangle())
                     .gesture(DragGesture(minimumDistance: 2)
+                        .updating($dragBase) { _, state, _ in
+                            if state == nil {
+                                state = DragBase(endTime: endTime, rightMin: rightMin, rightMax: rightMax)
+                            }
+                        }
                         .onChanged { value in
                             dragTranslation(value.translation, plot: plot)
                         })
@@ -231,15 +246,18 @@ struct PowerChartView: View {
 
     private func dragTranslation(_ tr: CGSize, plot: PlotRect) {
         // 横向 → 平移时间；纵向 → 平移右轴（真实数值）。
+        // 全部基于手势起点 dragBase 的绝对插值，保证与鼠标位移严格 1:1。
+        guard let base = dragBase else { return }
         let ptsPerSec = plot.plotW / timeRange
-        if abs(tr.width) > 0, ptsPerSec > 0 {
-            endTime = clampEnd(endTime - tr.width / ptsPerSec)
+        if ptsPerSec > 0 {
+            endTime = clampEnd(base.endTime - tr.width / ptsPerSec)
         }
-        if abs(tr.height) > 0, rightMax > rightMin {
-            let ptsPerUnit = plot.plotH / (rightMax - rightMin)
+        if base.rightMax > base.rightMin {
+            let ptsPerUnit = plot.plotH / (base.rightMax - base.rightMin)
             if ptsPerUnit > 0 {
                 let shift = tr.height / ptsPerUnit
-                rightMin += shift; rightMax += shift
+                rightMin = base.rightMin + shift
+                rightMax = base.rightMax + shift
                 autoRight = false
             }
         }
@@ -247,9 +265,9 @@ struct PowerChartView: View {
 
     private func handleScroll(dx: Double, dy: Double, option: Bool, plot: PlotRect) {
         if option {
-            // Option + 纵向滚动 → 缩放右轴。
+            // Option + 纵向滚动 → 缩放右轴（钳制单次幅度，避免一次滚轮跳变）。
             if dy != 0 {
-                zoomRight(by: exp(Double(-dy) * 0.015))
+                zoomRight(by: bounded(exp(Double(-dy) * 0.015), 0.86, 1.16))
                 autoRight = false
             }
             return
@@ -261,9 +279,13 @@ struct PowerChartView: View {
             }
         }
         if dy != 0 {
-            // 纵向滚动 → 缩放时间窗口（滚轮上滚放大即缩小时间跨度）。
-            zoomTime(by: exp(Double(-dy) * 0.02))
+            // 纵向滚动 → 缩放时间窗口（钳制单次缩放，触控板慢滚仍平滑，鼠标滚轮不剧跳）。
+            zoomTime(by: bounded(exp(Double(-dy) * 0.02), 0.84, 1.19))
         }
+    }
+
+    private func bounded(_ f: Double, _ lo: Double, _ hi: Double) -> Double {
+        min(max(f, lo), hi)
     }
 
     private func zoomTime(by factor: Double) {

@@ -21,6 +21,8 @@ final class PowerChartPanelController: NSWindowController {
         )
         panel.title = "MacBattery 历史图表"
         panel.isReleasedWhenClosed = false
+        // 失焦不隐藏 / 不关闭：否则点击桌面或其它窗口时图表会闪退。
+        panel.hidesOnDeactivate = false
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.contentMinSize = NSSize(width: 560, height: 320)

@@ -66,10 +66,11 @@ enum BatteryReader {
         let voltValue = Double(volt) / 1000.0
         guard isCharging else { return (false, 0, voltValue, 0) }
 
-        // 充电时按实际电流计算功率；电流尚未反转为负（插入初期）时不强行填功率。
+        // 充电时按实际电流计算功率；电流尚未建立（读取为 0）时不强行填功率。
+        // 部分机型 Amperage 符号约定可能与常见相反，因此在 isCharging 前提下取绝对值即可。
         let ampereAbs = Double(abs(ampere))
-        let watts = (ampere < 0 && volt > 0) ? ampereAbs * Double(volt) / 1_000_000.0 : 0
-        let current = ampere < 0 ? ampereAbs / 1000.0 : 0
+        let watts = (ampere != 0 && volt > 0) ? ampereAbs * Double(volt) / 1_000_000.0 : 0
+        let current = ampereAbs / 1000.0
         return (true, watts, voltValue, current)
     }
 

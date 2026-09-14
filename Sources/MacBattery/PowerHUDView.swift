@@ -173,7 +173,7 @@ struct PowerHUDView: View {
     private var chargeValueText: String {
         monitor.chargingWatts > 0
             ? String(format: "%.1f", monitor.chargingWatts)
-            : (isCharging ? "…" : "0")
+            : "0"
     }
 
     /// 充电电压·电流，写在充电功率下方。是否正在充电决定是否显示数值；
