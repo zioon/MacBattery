@@ -14,8 +14,11 @@ final class FloatingPanelController: NSWindowController {
     private var moveObserver: NSObjectProtocol?
 
     /// 挂件在 scale=1 时的基础宽高（与 PowerHUDView 保持一致）。
-    private let baseWidth: CGFloat = 58
-    private let baseHeight: CGFloat = 58
+    /// 可见底盘为 58×58，四周各留 6pt 透明余量供充电外发光扩散，避免被窗口边界裁切。
+    private let baseWidth: CGFloat = 70
+    private let baseHeight: CGFloat = 70
+    /// 面板四周的透明留白（与 PowerHUDView.glowMargin 一致），定位时需扣除。
+    private let glowMargin: CGFloat = 6
 
     init() {
         settings = SettingsStore()
@@ -79,7 +82,9 @@ final class FloatingPanelController: NSWindowController {
         guard let screen = NSScreen.main else { return }
         let vis = screen.visibleFrame
         let size = panel.frame.size
-        let margin: CGFloat = 20
+        // 面板四周含 glowMargin 的透明留白，扣除后可见底盘才与屏幕边缘保持 20pt。
+        let scale = (SizePreset(rawValue: settings.sizeRaw) ?? .medium).scale
+        let margin: CGFloat = 20 - glowMargin * scale
 
         let origin: NSPoint
         if settings.hasCustom {

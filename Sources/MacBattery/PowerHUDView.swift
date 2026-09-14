@@ -14,8 +14,12 @@ struct PowerHUDView: View {
     /// 充电特效的呼吸相位（仅充电时往复动画）。
     @State private var breathing = false
 
-    private var baseWidth: CGFloat { 58 }
-    private var baseHeight: CGFloat { 58 }
+    /// 可见底盘边长（scale=1 时为 58×58）。
+    private var contentSize: CGFloat { 58 }
+    /// 四周额外的透明余量：给充电时的外发光 / 模糊留出空间，避免被窗口边界裁切。
+    private var glowMargin: CGFloat { 6 * scale }
+    private var baseWidth: CGFloat { contentSize * scale + 2 * glowMargin }
+    private var baseHeight: CGFloat { contentSize * scale + 2 * glowMargin }
 
     // MARK: 充电环几何
 
@@ -136,7 +140,9 @@ struct PowerHUDView: View {
                 }
             }
         }
-        .frame(width: baseWidth * scale, height: baseHeight * scale)
+        // 四周留出透明余量，供外发光扩散（可见底盘仍为 contentSize×contentSize）
+        .padding(glowMargin)
+        .frame(width: baseWidth, height: baseHeight)
         // 电量变化时颜色平滑过渡；插拔电源时特效淡入淡出
         .animation(.easeInOut(duration: 0.8), value: monitor.batteryPercent)
         .animation(.easeInOut(duration: 0.3), value: isCharging)
@@ -200,29 +206,49 @@ struct PowerHUDView: View {
     }
 }
 
-/// 充电时沿环流动的高光段：一段短弧沿圆角矩形环循环流动。
+/// 充电时沿环流动的高光段。
+/// 用 TimelineView 由时钟直接求值（不经过 SwiftUI 隐式动画），
+/// 并用「绕回双段」画法保证高光长度始终恒定，不会越流越长。
 private struct ChargingSweep: View {
     var radius: CGFloat
     var lineWidth: CGFloat
     var scale: CGFloat
 
-    /// 高光段占整环的比例。
+    /// 高光段占整环的比例（固定不变）。
     private let tail: CGFloat = 0.18
-    private let duration: Double = 1.6
-
-    @State private var head: CGFloat = 0
+    /// 绕行一圈的时长（秒）。
+    private let period: Double = 1.6
 
     var body: some View {
+        TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { context in
+            arc(head: head(at: context.date))
+        }
+    }
+
+    /// 当前高光头端在环上的位置（0…1）。
+    private func head(at date: Date) -> CGFloat {
+        let t = date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period)
+        return CGFloat(t / period)
+    }
+
+    /// head 越过起点时，把这一段拆成「绕回」的两截，长度之和恒等于 tail。
+    @ViewBuilder
+    private func arc(head: CGFloat) -> some View {
+        let start = head - tail
+        if start >= 0 {
+            segment(from: start, to: head)
+        } else {
+            segment(from: 0, to: head)
+            segment(from: 1 + start, to: 1)
+        }
+    }
+
+    private func segment(from: CGFloat, to: CGFloat) -> some View {
         RoundedRectangle(cornerRadius: radius)
-            .trim(from: max(0, head - tail), to: max(0.0001, head))
+            .trim(from: from, to: to)
             .stroke(Color.white.opacity(0.85),
                     style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
             .blur(radius: 0.8 * scale)
-            .onAppear {
-                withAnimation(.linear(duration: duration).repeatForever(autoreverses: false)) {
-                    head = 1
-                }
-            }
     }
 }
 

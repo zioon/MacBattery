@@ -8,7 +8,7 @@ import Combine
 /// `swift run` 直接运行裸二进制（无 bundle 元数据）时回退到内置常量。
 enum AppVersion {
     /// 未打包运行时的兜底版本号，发版时与 tag 保持一致。
-    static let fallback = "1.0.4"
+    static let fallback = "1.0.5"
 
     static var current: String {
         if let v = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
