@@ -18,7 +18,6 @@ import AppKit
 struct PowerChartView: View {
 
     @ObservedObject var logger: PowerLogger
-    @ObservedObject var healthLogger: BatteryHealthLogger
 
     // MARK: 可见范围与缩放状态
 
@@ -31,6 +30,10 @@ struct PowerChartView: View {
     @State private var rightMax: Double = 100
     /// 右轴是否跟随数据自适应。
     @State private var autoRight = true
+    /// 右轴是否已完成首次适配（初始默认 0–100，拿到数据后直接跳变到目标一次）。
+    @State private var rightAxisInitialized = false
+    /// 右轴上一次适配时间，用于迟滞收缩按时间衰减（与调用频率无关）。
+    @State private var lastAxisUpdate = Date.distantPast
 
     /// 是否实时跟随最新数据。默认开启；用户拖拽平移或横向滚动到历史时自动关闭；
     /// 「适合窗口」会恢复。跟随期间右缘始终贴住最新样本。
@@ -43,6 +46,9 @@ struct PowerChartView: View {
     private struct DragBase {
         let endTime: Date
     }
+
+    /// 鼠标在图表内的悬停位置（相对画布全尺寸，y 向下，nil 表示已离开）。
+    @State private var hoverPoint: CGPoint?
 
     // MARK: 系列开关
 
@@ -65,9 +71,8 @@ struct PowerChartView: View {
     private var maxView: TimeInterval { 24 * 3600 }   // 最大可见跨度
     private let percentRange: ClosedRange<Double> = 0...100
 
-    init(logger: PowerLogger, healthLogger: BatteryHealthLogger) {
+    init(logger: PowerLogger) {
         self.logger = logger
-        self.healthLogger = healthLogger
         _endTime = State(initialValue: Date())
     }
 
@@ -87,15 +92,9 @@ struct PowerChartView: View {
                 Button("适合窗口") { fitToAll() }
                     .font(.caption)
             }
-
-            // 分隔线 + 电池健康信息区（默认时间跨度 1 个月）
-            Divider()
-            BatteryHealthChartView(healthLogger: healthLogger)
-                .frame(height: 288)
-                .frame(maxWidth: .infinity)
         }
         .padding(12)
-        .frame(minWidth: 640, minHeight: 320)
+        .frame(minWidth: 640, minHeight: 340)
 
         // 实时模式下，右缘跟着最新样本走（每来一条数据向前推进一次）。
         .onChange(of: logger.samples.last?.t) { newT in
@@ -103,7 +102,10 @@ struct PowerChartView: View {
                let t = newT {
                 endTime = t
             }
+            refreshRightAxis()
         }
+        .onAppear { refreshRightAxis() }
+        .onChange(of: valueSeriesMask) { _ in refreshRightAxis() }
     }
 
     // MARK: - 图例
@@ -149,16 +151,21 @@ struct PowerChartView: View {
         GeometryReader { geo in
             let plot = PlotRect(outer: geo.size, left: leftPad, right: rightPad, top: topPad, bottom: bottomPad)
             let draw = buildDraw(in: plot)
+            let startE = endTime.timeIntervalSince1970 - timeRange
+            let hover = hoverInfo(hoverX: hoverPoint?.x, plot: plot, startE: startE,
+                                  timeRange: timeRange, samples: logger.samples, series: enabledSeries)
 
             ZStack {
                 Canvas { ctx, size in
-                    draw.render(context: ctx, size: size, timeRange: timeRange)
+                    draw.render(context: ctx, size: size, timeRange: timeRange, hover: hover)
                 }
                 .background(Color.black.opacity(0.03))
 
-                // 鼠标事件层：横向滚轮平移、纵向缩放。
+                // 鼠标事件层：滚轮缩放/平移 + 悬停定位。
                 ScrollWheelCatcher { dx, dy, option in
                     handleScroll(dx: dx, dy: dy, option: option, plot: plot)
+                } onHover: { point in
+                    hoverPoint = point
                 }
 
                 // 拖拽平移：基于手势起点的绝对跟随，1:1 跟随鼠标，不累加漂移。
@@ -177,6 +184,37 @@ struct PowerChartView: View {
         }
     }
 
+    // MARK: - 悬停
+
+    /// 由鼠标 x 坐标定位最近的样本，生成竖线 + 数值浮层所需数据。
+    private func hoverInfo(hoverX: CGFloat?, plot: PlotRect, startE: Double,
+                           timeRange: TimeInterval, samples: [PowerSample], series: [SeriesDef]) -> HoverInfo? {
+        guard let hx = hoverX, hx >= plot.minX, hx <= plot.maxX else { return nil }
+        let targetE = startE + Double(hx - plot.minX) / plot.plotW * timeRange
+        guard let s = nearestSample(upTo: targetE, in: samples) else { return nil }
+        let x = plot.minX + CGFloat((s.t.timeIntervalSince1970 - startE) / timeRange) * plot.plotW
+        let rows = series.map { Row(color: $0.color, title: $0.title, value: fmtVal($0.dsp(s))) }
+        return HoverInfo(x: x, date: s.t, rows: rows)
+    }
+
+    /// 序列中时间不超过 target 的最近一条。
+    private func nearestSample(upTo target: Double, in arr: [PowerSample]) -> PowerSample? {
+        guard !arr.isEmpty else { return nil }
+        var lo = 0, hi = arr.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if arr[mid].t.timeIntervalSince1970 <= target { lo = mid + 1 } else { hi = mid }
+        }
+        let idx = lo - 1
+        return idx >= 0 ? arr[idx] : nil
+    }
+
+    private func fmtVal(_ v: Double) -> String {
+        if v.magnitude >= 100 { return String(format: "%.0f", v) }
+        if v == v.rounded() { return String(format: "%.0f", v) }
+        return String(format: "%.1f", v)
+    }
+
     // MARK: - 系列定义
 
     /// 当前启用的系列。
@@ -192,6 +230,11 @@ struct PowerChartView: View {
         return list
     }
 
+    /// 当前启用的真实值（右轴）系列位掩码；变化时需要重新适配右轴范围。
+    private var valueSeriesMask: Int {
+        (showSystemW ? 1 : 0) | (showChargingW ? 2 : 0) | (showVoltage ? 4 : 0) | (showCurrent ? 8 : 0)
+    }
+
     private var summaryText: String {
         "样本 \(logger.samples.count) 个 · 查看最近 " + timeText(timeRange)
     }
@@ -199,9 +242,34 @@ struct PowerChartView: View {
     private func buildDraw(in plot: PlotRect) -> ChartDraw {
         let startE = endTime.timeIntervalSince1970 - timeRange
         let endE = endTime.timeIntervalSince1970
-        let samples = logger.samples
+        let (start, end) = visibleIndexRange()
 
-        // 二分定位可视区间索引。
+        let count = max(0, end - start)
+        let visible = count > 0 ? Array(logger.samples[start..<end]) : []
+        // 按像素降采样，避免缩放小时绘制过多点。
+        let stride = max(1, Int(ceil(Double(count) / Double(plot.plotW))))
+
+        // 右轴（真实数值）范围由 refreshRightAxis() 维护：刻度取整 + 迟滞，避免随采样频繁跳动。
+        return ChartDraw(
+            visibleSamples: visible,
+            drawStride: stride,
+            startE: startE,
+            endE: endE,
+            percentRange: percentRange,
+            valueMin: rightMin,
+            valueMax: rightMax,
+            plot: plot,
+            series: enabledSeries
+        )
+    }
+
+    // MARK: - 右轴（真实数值）范围维护
+
+    /// 当前可视时间窗口在 samples 中的索引区间（二分定位）。
+    private func visibleIndexRange() -> (start: Int, end: Int) {
+        let samples = logger.samples
+        let startE = endTime.timeIntervalSince1970 - timeRange
+        let endE = endTime.timeIntervalSince1970
         var lo = 0, hi = samples.count
         while lo < hi {
             let mid = (lo + hi) / 2
@@ -213,51 +281,91 @@ struct PowerChartView: View {
             let mid = (lo + hi) / 2
             if samples[mid].t.timeIntervalSince1970 <= endE { lo = mid + 1 } else { hi = mid }
         }
-        let end = lo
-
-        let count = max(0, end - start)
-        let visible = count > 0 ? Array(samples[start..<end]) : []
-        // 按像素降采样，避免缩放小时绘制过多点。
-        let stride = max(1, Int(ceil(Double(count) / Double(plot.plotW))))
-
-        // 右轴（真实数值）自适应：只读计算，不写回状态。
-        let (vMin, vMax) = autoRight ? autoValueViewport(visible, stride: stride) : (rightMin, rightMax)
-
-        return ChartDraw(
-            visibleSamples: visible,
-            drawStride: stride,
-            startE: startE,
-            endE: endE,
-            percentRange: percentRange,
-            valueMin: vMin,
-            valueMax: vMax,
-            plot: plot,
-            series: enabledSeries
-        )
+        return (start, lo)
     }
 
-    /// 为右轴（真实数值系列）自适应范围，带 8% 内边距，最小跨度 1。
-    private func autoValueViewport(_ visible: [PowerSample], stride: Int) -> (Double, Double) {
+    /// 可视窗口内真实值系列（右轴）的实际最小 / 最大值。
+    private func visibleValueBounds() -> (lo: Double, hi: Double) {
         let vals = enabledSeries.filter { $0.axis == .value }
-        guard !vals.isEmpty, !visible.isEmpty else { return (0, 100) }
+        guard !vals.isEmpty else { return (.infinity, -.infinity) }
+        let range = visibleIndexRange()
+        guard range.end > range.start else { return (.infinity, -.infinity) }
+        let samples = logger.samples
         var lo = Double.greatestFiniteMagnitude
         var hi = -Double.greatestFiniteMagnitude
-        var i = 0
-        while i < visible.count {
-            let s = visible[i]
+        var i = range.start
+        while i < range.end {
+            let s = samples[i]
             for def in vals {
                 let v = def.dsp(s)
                 lo = min(lo, v); hi = max(hi, v)
             }
-            i += stride
+            i += 1
         }
-        guard lo.isFinite, hi.isFinite else { return (0, 100) }
-        // 电压多维持在 ~12V，给足余量避免贴边。
-        if hi - lo < 1 { let m = (lo + hi) / 2; lo = m - 1; hi = m + 1 }
-        let pad = (hi - lo) * 0.08
+        return lo.isFinite && hi.isFinite ? (lo, hi) : (.infinity, -.infinity)
+    }
+
+    /// 把原始数据范围换算成稳定的右轴目标范围：
+    /// 1-2-5 刻度取整（nice 值）+ 15% 边距 + 至少 2.5 个刻度的最小跨度。
+    private func niceViewport(_ lo: Double, _ hi: Double) -> (Double, Double) {
+        var lo = lo, hi = hi
+        if !(hi > lo) {
+            // 恒定值（含全 0）：以 1 为跨度居中，避免噪声级轴范围。
+            let c = lo
+            lo = c - 0.5; hi = c + 0.5
+            if lo < 0 { lo = 0 }
+        }
+        let pad = (hi - lo) * 0.15
         var a = lo - pad, b = hi + pad
-        if b - a < 2 { let m = (a + b) / 2; a = m - 1; b = m + 1 }
-        return (max(0, a), b)
+        let step = niceStep(b - a, target: 5)
+        let minSpan = step * 2.5
+        if b - a < minSpan {
+            let m = (a + b) / 2
+            a = m - minSpan / 2; b = m + minSpan / 2
+        }
+        a = floor(a / step) * step
+        b = ceil(b / step) * step
+        if a < 0 { a = 0 }
+        if !(b > a) { b = a + step }
+        return (a, b)
+    }
+
+    /// 数据 / 时间窗口变化后维护右轴范围。
+    ///
+    /// 两层稳定机制，避免随 0.5s 一次采样频繁跳动：
+    /// 1. 目标范围先取整到 nice 刻度，小幅噪声不改变结果（如 57.3→58.1W 都落在 0–80）；
+    /// 2. 迟滞：数据超界立即扩张；数据最高点回落到轴上限 70% 以下时才按时间缓慢收缩
+    ///    （每秒收敛约 20%），短暂尖峰不会让整个纵轴来回拉扯。
+    private func refreshRightAxis() {
+        guard autoRight else { return }
+        let (lo, hi) = visibleValueBounds()
+        guard lo.isFinite, hi.isFinite, hi >= lo else { return }
+        let (tLo, tHi) = niceViewport(lo, hi)
+
+        if !rightAxisInitialized {
+            // 首次适配：直接跳到目标范围（从默认 0–100 一次到位）。
+            rightMin = tLo
+            rightMax = tHi
+            rightAxisInitialized = true
+            lastAxisUpdate = Date()
+            return
+        }
+        var a = rightMin, b = rightMax
+        // 扩张：立即跟随。
+        if tHi > b { b = tHi }
+        if tLo < a { a = tLo }
+        // 收缩：迟滞 + 按时间衰减（每秒收敛 20%，与调用频率无关，拖动时也平滑）。
+        let dt = min(3.0, Date().timeIntervalSince(lastAxisUpdate))
+        let k = 1 - pow(0.8, dt)
+        if b > tHi, hi < b - (b - a) * 0.3 {
+            b = max(tHi, b - (b - tHi) * k)
+        }
+        if a > 0, tLo > a, lo > a + (b - a) * 0.3 {
+            a = min(tLo, a + (tLo - a) * k)
+        }
+        rightMin = a
+        rightMax = b
+        lastAxisUpdate = Date()
     }
 
     // MARK: - 交互
@@ -272,6 +380,7 @@ struct PowerChartView: View {
         if ptsPerSec > 0 {
             endTime = clampEnd(base.endTime - tr.width / ptsPerSec)
         }
+        refreshRightAxis()
     }
 
     private func handleScroll(dx: Double, dy: Double, option: Bool, plot: PlotRect) {
@@ -295,6 +404,7 @@ struct PowerChartView: View {
             // 纵向滚动 → 缩放时间窗口：右缘锚定（实时模式下保持贴最新），钳制单次缩放。
             zoomTime(by: bounded(exp(Double(-dy) * 0.02), 0.84, 1.19))
         }
+        refreshRightAxis()
     }
 
     private func bounded(_ f: Double, _ lo: Double, _ hi: Double) -> Double {
@@ -341,6 +451,8 @@ struct PowerChartView: View {
         endTime = Date()
         autoRight = true
         followLive = true
+        rightAxisInitialized = false
+        refreshRightAxis()
     }
 
     private func timeText(_ seconds: TimeInterval) -> String {
@@ -362,6 +474,19 @@ private struct SeriesDef {
     let color: Color
     let axis: AxisKind
     let dsp: (PowerSample) -> Double
+}
+
+/// 悬停浮层数据：竖线位置 + 该时刻各系列取值。
+private struct HoverInfo {
+    let x: CGFloat
+    let date: Date
+    let rows: [Row]
+
+    struct Row {
+        let color: Color
+        let title: String
+        let value: String
+    }
 }
 
 // MARK: - 绘制矩形区域
@@ -448,7 +573,7 @@ private struct ChartDraw {
 
     // MARK: 渲染
 
-    func render(context: GraphicsContext, size: CGSize, timeRange: TimeInterval) {
+    func render(context: GraphicsContext, size: CGSize, timeRange: TimeInterval, hover: HoverInfo?) {
         let plot = self.plot
         let bands = buildBands()
 
@@ -492,6 +617,46 @@ private struct ChartDraw {
         // 坐标轴与标签（不裁剪）。
         axisLines(context: context)
         axisLabels(context: context, timeRange: timeRange)
+
+        // 悬停：竖线 + 数值浮层。
+        if let hover {
+            drawHover(hover, in: context, plot: plot)
+        }
+    }
+
+    /// 绘制悬停竖线 + 该时刻数值浮层。
+    private func drawHover(_ hover: HoverInfo, in ctx: GraphicsContext, plot: PlotRect) {
+        let x = CGFloat(hover.x)
+        guard x >= plot.minX, x <= plot.maxX else { return }
+
+        // 竖线
+        var vp = Path()
+        vp.move(to: CGPoint(x: x, y: plot.minY))
+        vp.addLine(to: CGPoint(x: x, y: plot.maxY))
+        ctx.stroke(vp, with: .color(.white.opacity(0.55)), lineWidth: 1)
+
+        // 浮层放竖线偏向空白一侧。
+        let goRight = x < plot.minX + plot.plotW / 2
+        let anchor: UnitPoint = goRight ? .leading : .trailing
+        let bx = goRight ? x + 10 : x - 10
+        let formatter = DateFormatter()
+        let span = endE - startE
+        if span >= 86400 { formatter.dateFormat = "MM-dd HH:mm" }
+        else if span >= 3600 { formatter.dateFormat = "HH:mm" }
+        else { formatter.dateFormat = "HH:mm:ss" }
+        let timeText = Text(formatter.string(from: hover.date))
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundColor(.white)
+        ctx.draw(timeText, at: CGPoint(x: bx, y: plot.minY + 8), anchor: anchor)
+
+        var yy = plot.minY + 26
+        for row in hover.rows {
+            let line = Text("\(row.title)  \(row.value)")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(row.color)
+            ctx.draw(line, at: CGPoint(x: bx, y: yy), anchor: anchor)
+            yy += 15
+        }
     }
 
     private func stroke(_ band: ActiveBand, in layer: GraphicsContext) {
@@ -593,20 +758,6 @@ private struct ChartDraw {
         return candidates.last ?? 86400
     }
 
-    private func niceStep(_ span: Double, target: Int) -> Double {
-        guard span > 0 else { return 1 }
-        let raw = span / Double(max(1, target))
-        let mag = pow(10, floor(log10(raw)))
-        let residual = raw / mag
-        let step: Double
-        if residual < 1 { step = 1 }
-        else if residual < 2 { step = 2 }
-        else if residual < 2.5 { step = 2.5 }
-        else if residual < 5 { step = 5 }
-        else { step = 10 }
-        return step * mag
-    }
-
     private func formatY(_ v: Double) -> String {
         if abs(v - v.rounded()) < 1e-6 || v.magnitude >= 100 { return String(format: "%.0f", v) }
         return String(format: "%.1f", v)
@@ -623,24 +774,30 @@ private struct ChartDraw {
 
 // MARK: - 滚轮捕获（NSView 桥接）
 
-/// 捕获滚动事件并回调给 SwiftUI：dx / dy 为带符号位移，option 表示是否按住 Option。
+/// 捕获滚动 + 鼠标悬停事件并回调给 SwiftUI。
+/// dx/dy 为带符号滚动位移，option 表示是否按住 Option；onHover 回传鼠标位置（nil 表示离开）。
 struct ScrollWheelCatcher: NSViewRepresentable {
     var onScroll: (Double, Double, Bool) -> Void
+    var onHover: (CGPoint?) -> Void
 
     func makeNSView(context: Context) -> ScrollCatcherView {
         let v = ScrollCatcherView()
         v.onScroll = onScroll
+        v.onHover = onHover
         v.allowedTouchTypes = [.direct, .indirect]
         return v
     }
 
     func updateNSView(_ nsView: ScrollCatcherView, context: Context) {
         nsView.onScroll = onScroll
+        nsView.onHover = onHover
     }
 }
 
 final class ScrollCatcherView: NSView {
     var onScroll: ((Double, Double, Bool) -> Void)?
+    var onHover: ((CGPoint?) -> Void)?
+    private var tracking: NSTrackingArea?
 
     override func scrollWheel(with event: NSEvent) {
         let dx = event.scrollingDeltaX
@@ -651,4 +808,45 @@ final class ScrollCatcherView: NSView {
         }
         // 已消费，不冒泡。
     }
+
+    // MARK: 悬停跟踪
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let tracking { removeTrackingArea(tracking) }
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        tracking = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        onHover?(convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        onHover?(nil)
+    }
+}
+
+// MARK: - 刻度步长（文件级共享）
+
+/// 单调的 1-2-5 刻度步长：span 增大时步长只增不减，保证轴范围与刻度对齐、稳定。
+/// 右轴范围取整（niceViewport）与刻度绘制（yTicks）共用同一实现。
+private func niceStep(_ span: Double, target: Int) -> Double {
+    guard span > 0 else { return 1 }
+    let raw = span / Double(max(1, target))
+    let mag = pow(10, floor(log10(raw)))
+    let residual = raw / mag
+    let step: Double
+    if residual < 1 { step = 1 }
+    else if residual < 2 { step = 2 }
+    else if residual < 2.5 { step = 2.5 }
+    else if residual < 5 { step = 5 }
+    else { step = 10 }
+    return step * mag
 }

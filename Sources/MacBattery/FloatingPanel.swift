@@ -11,6 +11,7 @@ final class FloatingPanelController: NSWindowController {
     private let logger = PowerLogger()
     private let healthLogger = BatteryHealthLogger()
     private var chartController: PowerChartPanelController?
+    private var healthPanelController: BatteryHealthPanelController?
     private let updater = UpdateChecker()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var settingsWindow: NSWindow?
@@ -146,6 +147,11 @@ final class FloatingPanelController: NSWindowController {
         chartItem.target = self
         menu.addItem(chartItem)
 
+        // 电池健康（独立窗口）
+        let healthItem = NSMenuItem(title: "电池健康…", action: #selector(openHealthChart), keyEquivalent: "h")
+        healthItem.target = self
+        menu.addItem(healthItem)
+
         menu.addItem(.separator())
 
         // 位置子菜单
@@ -219,6 +225,14 @@ final class FloatingPanelController: NSWindowController {
                                                                  logger: logger,
                                                                  healthLogger: healthLogger)
         chartController?.showWindow(nil)
+        window?.orderFront(nil) // 保证挂件仍在菜单之上可见
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func openHealthChart() {
+        healthPanelController = BatteryHealthPanelController.makeIfNeeded(existing: healthPanelController,
+                                                                          healthLogger: healthLogger)
+        healthPanelController?.showWindow(nil)
         window?.orderFront(nil) // 保证挂件仍在菜单之上可见
         NSApp.activate(ignoringOtherApps: true)
     }

@@ -129,7 +129,7 @@ struct BatteryHealthChartView: View {
                 // 滚轮：横向平移 / 纵向缩放时间窗 / Option 缩放 y 轴。
                 ScrollWheelCatcher { dx, dy, option in
                     handleScroll(dx: dx, dy: dy, option: option, plot: plot)
-                }
+                } onHover: { _ in }
 
                 // 拖拽平移。
                 Color.clear
