@@ -49,10 +49,14 @@ enum BatteryReader {
         }
 
         // Amperage(mA) 负=充入、正=放电；Voltage(mV)。
-        // 以官方 IsCharging 标志为充电状态的权威依据：仅当该标志缺失（罕见机型）时，
-        // 才退回「电流为负且电压有效」来兜底——避免未充电时电流方向的瞬时负值被误报成正在充电。
+        // 充电状态以 IOPS（IOPSCopyPowerSourcesInfo）官方电源源为准——这与 macOS 系统
+        // 菜单栏电池图标的显示完全一致，插上充电器会即时置位，避免 AppleSmartBattery 的
+        // IsCharging 固件属性在插入瞬间滞后数秒而误判「不在充电」。
+        // IOPS 无数据时才退回 IsCharging 标志或电流方向判定。
         let isCharging: Bool
-        if props["IsCharging"] != nil {
+        if let flag = Self.ioPSIsCharging() {
+            isCharging = flag
+        } else if props["IsCharging"] != nil {
             isCharging = chargingFlag == 1
         } else {
             isCharging = ampere < 0 && volt > 0
@@ -62,11 +66,25 @@ enum BatteryReader {
         let voltValue = Double(volt) / 1000.0
         guard isCharging else { return (false, 0, voltValue, 0) }
 
-        // 有官方充电标志，正/负电流绝对值即充电电流；无电压读数时不强行填功率。
+        // 充电时按实际电流计算功率；电流尚未反转为负（插入初期）时不强行填功率。
         let ampereAbs = Double(abs(ampere))
-        let watts = volt > 0 ? ampereAbs * Double(volt) / 1_000_000.0 : 0
+        let watts = (ampere < 0 && volt > 0) ? ampereAbs * Double(volt) / 1_000_000.0 : 0
         let current = ampere < 0 ? ampereAbs / 1000.0 : 0
         return (true, watts, voltValue, current)
+    }
+
+    /// 用 IOPS 官方电源源判定是否在充电（与系统菜单栏电池图标一致，插拔即时）。
+    private static func ioPSIsCharging() -> Bool? {
+        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+              let sources = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef]
+        else { return nil }
+        for source in sources {
+            guard let desc = IOPSGetPowerSourceDescription(blob, source)?.takeUnretainedValue()
+                as? [String: Any],
+                let flag = desc[kIOPSIsChargingKey] as? Bool else { continue }
+            return flag
+        }
+        return nil
     }
 
     /// 读取 AppleSmartBattery 的完整属性字典；失败返回 nil（调用方据此重建句柄重试）。

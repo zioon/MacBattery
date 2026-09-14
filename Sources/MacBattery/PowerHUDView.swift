@@ -176,9 +176,10 @@ struct PowerHUDView: View {
             : (isCharging ? "…" : "0")
     }
 
-    /// 充电电压·电流，写在充电功率下方。无有效读值/未充电时显示占位，保持布局稳定。
+    /// 充电电压·电流，写在充电功率下方。是否正在充电决定是否显示数值；
+    /// 未充电/读不到时显示占位，保持布局稳定（涓流暂停时电流可为 0.0A，仍如实展示）。
     private var voltageAmpsText: String {
-        monitor.chargingVoltage > 0 && monitor.chargingCurrent > 0
+        isCharging
             ? String(format: "%.1fV · %.1fA", monitor.chargingVoltage, monitor.chargingCurrent)
             : "--V · --A"
     }
