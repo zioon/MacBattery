@@ -32,8 +32,6 @@ struct PowerChartView: View {
     @State private var autoRight = true
     /// 右轴是否已完成首次适配（初始默认 0–100，拿到数据后直接跳变到目标一次）。
     @State private var rightAxisInitialized = false
-    /// 右轴上一次适配时间，用于迟滞收缩按时间衰减（与调用频率无关）。
-    @State private var lastAxisUpdate = Date.distantPast
 
     /// 是否实时跟随最新数据。默认开启；用户拖拽平移或横向滚动到历史时自动关闭；
     /// 「适合窗口」会恢复。跟随期间右缘始终贴住最新样本。
@@ -339,10 +337,10 @@ struct PowerChartView: View {
 
     /// 数据 / 时间窗口变化后维护右轴范围。
     ///
-    /// 两层稳定机制，避免随 0.5s 一次采样频繁跳动：
+    /// 两层稳定机制，保证「同一缩放 / 同一窗口下历史曲线绝对静止」：
     /// 1. 目标范围先取整到 nice 刻度，小幅噪声不改变结果（如 57.3→58.1W 都落在 0–80）；
-    /// 2. 迟滞：数据超界立即扩张；数据最高点回落到轴上限 70% 以下时才按时间缓慢收缩
-    ///    （每秒收敛约 20%），短暂尖峰不会让整个纵轴来回拉扯。
+    /// 2. 台阶式：数据超界立即扩张；数据最高点回落到轴上限 70% 以下时一次性跳到
+    ///    新的 nice 范围（不做连续逼近）。固定窗口下目标范围不变 → 右轴恒定 → y 不漂移。
     private func refreshRightAxis() {
         guard autoRight else { return }
         let (lo, hi) = visibleValueBounds()
@@ -354,25 +352,17 @@ struct PowerChartView: View {
             rightMin = tLo
             rightMax = tHi
             rightAxisInitialized = true
-            lastAxisUpdate = Date()
             return
         }
         var a = rightMin, b = rightMax
         // 扩张：立即跟随。
         if tHi > b { b = tHi }
         if tLo < a { a = tLo }
-        // 收缩：迟滞 + 按时间衰减（每秒收敛 20%，与调用频率无关，拖动时也平滑）。
-        let dt = min(3.0, Date().timeIntervalSince(lastAxisUpdate))
-        let k = 1 - pow(0.8, dt)
-        if b > tHi, hi < b - (b - a) * 0.3 {
-            b = max(tHi, b - (b - tHi) * k)
-        }
-        if a > 0, tLo > a, lo > a + (b - a) * 0.3 {
-            a = min(tLo, a + (tLo - a) * k)
-        }
+        // 收缩：台阶式跳变（一次性到位，不连续逼近）。
+        if b > tHi, hi < b - (b - a) * 0.3 { b = tHi }
+        if a > 0, tLo > a, lo > a + (b - a) * 0.3 { a = tLo }
         rightMin = a
         rightMax = b
-        lastAxisUpdate = Date()
     }
 
     // MARK: - 交互
@@ -563,14 +553,18 @@ private struct ChartDraw {
 
     var hasValueSeries: Bool { series.contains { $0.axis == .value } }
 
-    /// 把可视样本按像素分桶取平均（每桶一个点）后，分别按主/副轴换算成各系列的 (x, y) 点。
-    /// 相比逐点抽稀，分桶平均对 CPU / 整机功耗这类 0.5s 高频抖动的数据更稳定：
-    /// 长时间窗下每个像素代表一段时间窗的均值，毛刺被抹平、趋势不丢失。
+    /// 把可视样本按「绝对时间锚定桶」取平均（每桶一个点）后，分别按主/副轴换算成各系列的 (x, y) 点。
+    ///
+    /// 桶边界锚定在绝对时间网格上（`floor(t / bucketSpan)`），而非窗口相对位置：
+    /// 窗口平移 / 实时滚动时，同一历史时刻始终落入同一个桶，桶内均值不变，
+    /// 因此固定窗口下历史曲线绝对静止；滚动时曲线只整体平移、形状不波动。
     func buildBands() -> (percent: [ActiveBand], value: [ActiveBand]) {
         let plotW = plot.plotW, plotH = plot.plotH
         let minX = plot.minX, maxY = plot.maxY
         let span = max(1e-9, endE - startE)
-        let bucketCount = max(1, Int(plotW))   // 每像素一桶
+        let bucketCount = max(1, Int(plotW))           // 每像素一桶
+        let bucketSpan = span / Double(bucketCount)    // 每桶对应时间宽度
+        let gridStart = Int(floor(startE / bucketSpan))  // 窗口左缘所在的绝对桶索引
 
         var percentBands: [ActiveBand] = []
         var valueBands: [ActiveBand] = []
@@ -578,14 +572,14 @@ private struct ChartDraw {
         let vSpan = max(1e-9, valueMax - valueMin)
 
         for def in series {
-            // 先按时间把每个样本归入对应像素桶并累加，桶内取均值。
+            // 按绝对时间桶累加，桶内取均值（同一历史时刻永远落入同一桶）。
             var sums = [Double](repeating: 0, count: bucketCount)
             var counts = [Int](repeating: 0, count: bucketCount)
             var i = sampleStart
             while i < sampleEnd {
                 let s = samples[i]
-                let frac = (s.t.timeIntervalSince1970 - startE) / span
-                var b = Int(frac * Double(bucketCount))
+                let t = s.t.timeIntervalSince1970
+                var b = Int(floor(t / bucketSpan)) - gridStart
                 if b < 0 { b = 0 } else if b >= bucketCount { b = bucketCount - 1 }
                 sums[b] += def.dsp(s)
                 counts[b] += 1
@@ -594,7 +588,9 @@ private struct ChartDraw {
             var pts: [CGPoint] = []
             pts.reserveCapacity(bucketCount + 2)
             for b in 0..<bucketCount where counts[b] > 0 {
-                let x = minX + (Double(b) + 0.5) / Double(bucketCount) * plotW
+                // 桶中心用绝对时间换算 x：固定窗口下各桶的 x 恒定。
+                let tCenter = (Double(gridStart + b) + 0.5) * bucketSpan
+                let x = minX + (tCenter - startE) / span * plotW
                 let v = sums[b] / Double(counts[b])
                 let y: Double
                 switch def.axis {

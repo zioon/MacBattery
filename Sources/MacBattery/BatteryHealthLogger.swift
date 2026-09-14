@@ -26,6 +26,9 @@ final class BatteryHealthLogger: ObservableObject {
     /// 采样间隔：每 60s 尝试读取一次，未变化则不落盘。
     static let sampleInterval: TimeInterval = 60
 
+    /// 基线留档间隔：即使健康值未变化，每隔该时长也强制记录一条，避免长时间无历史点。
+    static let baselineInterval: TimeInterval = 6 * 3600
+
     /// 按时间升序的健康样本缓冲（主线程访问）。
     @Published private(set) var samples: [BatteryHealthSample] = []
 
@@ -55,9 +58,14 @@ final class BatteryHealthLogger: ObservableObject {
         timer = nil
     }
 
+    /// 立即采样一次并落盘（供打开健康窗口等时机调用），确保当前值马上可见。
+    func recordNow() {
+        sample()
+    }
+
     // MARK: - 采样
 
-    /// 读取一次电池健康值；若相对上一条记录发生变化则追加并落盘。
+    /// 读取一次电池健康值；任一字段相对上一条有变化，或距上一条已超过基线间隔时追加并落盘。
     private func sample() {
         guard let health = BatteryReader.health() else { return }
         let now = BatteryHealthSample(
@@ -67,13 +75,15 @@ final class BatteryHealthLogger: ObservableObject {
             healthPercent: health.healthPercent,
             cycleCount: health.cycleCount
         )
-        // 与上一条已记录值相比，任一字段有变化才新增（避免累积平直点）。
-        if let last = lastRecorded,
-           last.maxCapacity == now.maxCapacity,
-           last.designCapacity == now.designCapacity,
-           abs(last.healthPercent - now.healthPercent) < 1e-9,
-           last.cycleCount == now.cycleCount {
-            return
+        if let last = lastRecorded {
+            // 1) 健康值发生任何变化 → 必须记录；
+            // 2) 距上次记录已超过基线间隔 → 即使未变化也强制留档，历史不空洞。
+            let changed = last.maxCapacity != now.maxCapacity
+                || last.designCapacity != now.designCapacity
+                || abs(last.healthPercent - now.healthPercent) >= 1e-9
+                || last.cycleCount != now.cycleCount
+            let staleBaseline = now.t.timeIntervalSince(last.t) >= Self.baselineInterval
+            if !changed && !staleBaseline { return }
         }
         append(now)
     }
@@ -95,6 +105,9 @@ final class BatteryHealthLogger: ObservableObject {
         store.readRecent(limit: Self.historyBackfill) { [weak self] history in
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                // 回填完成前若已有新采样写入缓冲，则保留内存中的最新数据、不覆盖，
+                // 避免异步回填把启动瞬间采到的点冲掉导致图表空白。
+                guard self.samples.isEmpty else { return }
                 self.samples = history
                 self.lastRecorded = history.last
             }
