@@ -12,14 +12,16 @@ permissions:
 
 jobs:
   build-and-release:
-    # Intel build runner -> x86_64 binary, matching Intel Macs.
-    runs-on: macos-13
+    # macOS-14 (arm64) hosted runner is free on public repos.
+    # Build a universal binary (arm64 + x86_64) so it runs on both
+    # Apple Silicon and Intel Macs.
+    runs-on: macos-14
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build (release)
-        run: swift build -c release --arch x86_64
+      - name: Build (release, universal)
+        run: swift build -c release --arch arm64 --arch x86_64
         timeout-minutes: 30
 
       - name: Assemble .app bundle
