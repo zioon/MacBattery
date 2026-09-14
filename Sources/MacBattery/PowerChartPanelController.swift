@@ -10,11 +10,13 @@ final class PowerChartPanelController: NSWindowController {
     }
 
     /// 创建图表窗口（首次调用后复用）。
-    static func makeIfNeeded(existing: PowerChartPanelController?, logger: PowerLogger)
+    static func makeIfNeeded(existing: PowerChartPanelController?,
+                             logger: PowerLogger,
+                             healthLogger: BatteryHealthLogger)
         -> PowerChartPanelController {
         if let existing { return existing }
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 700, height: 420),
+            contentRect: NSRect(x: 0, y: 0, width: 700, height: 600),
             styleMask: [.titled, .closable, .resizable, .miniaturizable],
             backing: .buffered,
             defer: false
@@ -23,12 +25,12 @@ final class PowerChartPanelController: NSWindowController {
         panel.isReleasedWhenClosed = false
         // 失焦不隐藏 / 不关闭：否则点击桌面或其它窗口时图表会闪退。
         panel.hidesOnDeactivate = false
-        panel.level = .floating
+        // 普通窗口层级：不做置顶，避免遮挡其它应用；需要看趋势时再手动切换。
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.contentMinSize = NSSize(width: 560, height: 320)
+        panel.contentMinSize = NSSize(width: 560, height: 500)
 
-        let hosting = NSHostingView(rootView: PowerChartView(logger: logger))
-        hosting.frame = NSRect(x: 0, y: 0, width: 700, height: 420)
+        let hosting = NSHostingView(rootView: PowerChartView(logger: logger, healthLogger: healthLogger))
+        hosting.frame = NSRect(x: 0, y: 0, width: 700, height: 600)
         hosting.autoresizingMask = [.width, .height]
         panel.contentView = hosting
 

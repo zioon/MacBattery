@@ -74,6 +74,34 @@ enum BatteryReader {
         return (true, watts, voltValue, current)
     }
 
+    /// 电池健康信息（变化缓慢，供健康图表按需读取）。
+    struct BatteryHealth {
+        /// 当前最大容量（mAh，AppleRawMaxCapacity）
+        var maxCapacity: Int
+        /// 设计容量（mAh，DesignCapacity）
+        var designCapacity: Int
+        /// 电池健康度（% = 当前最大容量 / 设计容量）
+        var healthPercent: Double
+        /// 充放电循环次数（CycleCount）
+        var cycleCount: Int
+    }
+
+    /// 读取电池健康信息（当前最大容量 / 设计容量 / 健康度 / 循环次数）。
+    /// 关键容量值任一不可读（≤0）时返回 nil，表示数据暂不可用。
+    static func health() -> BatteryHealth? {
+        let service = currentService()
+        guard service != 0, let props = readProperties(service) else { return nil }
+        let maxCap = intValue(props["AppleRawMaxCapacity"])
+        let designCap = intValue(props["DesignCapacity"])
+        guard maxCap > 0, designCap > 0 else { return nil }
+        return BatteryHealth(
+            maxCapacity: maxCap,
+            designCapacity: designCap,
+            healthPercent: Double(maxCap) / Double(designCap) * 100.0,
+            cycleCount: intValue(props["CycleCount"])
+        )
+    }
+
     /// 用 IOPS 官方电源源判定是否在充电（与系统菜单栏电池图标一致，插拔即时）。
     private static func ioPSIsCharging() -> Bool? {
         guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),

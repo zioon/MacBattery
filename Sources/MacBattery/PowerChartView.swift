@@ -18,6 +18,7 @@ import AppKit
 struct PowerChartView: View {
 
     @ObservedObject var logger: PowerLogger
+    @ObservedObject var healthLogger: BatteryHealthLogger
 
     // MARK: 可见范围与缩放状态
 
@@ -31,14 +32,16 @@ struct PowerChartView: View {
     /// 右轴是否跟随数据自适应。
     @State private var autoRight = true
 
+    /// 是否实时跟随最新数据。默认开启；用户拖拽平移或横向滚动到历史时自动关闭；
+    /// 「适合窗口」会恢复。跟随期间右缘始终贴住最新样本。
+    @State private var followLive = true
+
     /// 拖拽基准（手势开始时记录，保证平移严格跟手、不累积偏差）。
     @GestureState private var dragBase: DragBase?
 
-    /// 一次拖拽的起始视口。
+    /// 一次拖拽的起始时间右缘。
     private struct DragBase {
         let endTime: Date
-        let rightMin: Double
-        let rightMax: Double
     }
 
     // MARK: 系列开关
@@ -62,8 +65,9 @@ struct PowerChartView: View {
     private var maxView: TimeInterval { 24 * 3600 }   // 最大可见跨度
     private let percentRange: ClosedRange<Double> = 0...100
 
-    init(logger: PowerLogger) {
+    init(logger: PowerLogger, healthLogger: BatteryHealthLogger) {
         self.logger = logger
+        self.healthLogger = healthLogger
         _endTime = State(initialValue: Date())
     }
 
@@ -83,9 +87,23 @@ struct PowerChartView: View {
                 Button("适合窗口") { fitToAll() }
                     .font(.caption)
             }
+
+            // 分隔线 + 电池健康信息区（默认时间跨度 1 个月）
+            Divider()
+            BatteryHealthChartView(healthLogger: healthLogger)
+                .frame(height: 288)
+                .frame(maxWidth: .infinity)
         }
         .padding(12)
-        .frame(minWidth: 640, minHeight: 340)
+        .frame(minWidth: 640, minHeight: 320)
+
+        // 实时模式下，右缘跟着最新样本走（每来一条数据向前推进一次）。
+        .onChange(of: logger.samples.last?.t) { newT in
+            if followLive,
+               let t = newT {
+                endTime = t
+            }
+        }
     }
 
     // MARK: - 图例
@@ -149,7 +167,7 @@ struct PowerChartView: View {
                     .gesture(DragGesture(minimumDistance: 2)
                         .updating($dragBase) { _, state, _ in
                             if state == nil {
-                                state = DragBase(endTime: endTime, rightMin: rightMin, rightMax: rightMax)
+                                state = DragBase(endTime: endTime)
                             }
                         }
                         .onChanged { value in
@@ -245,21 +263,14 @@ struct PowerChartView: View {
     // MARK: - 交互
 
     private func dragTranslation(_ tr: CGSize, plot: PlotRect) {
-        // 横向 → 平移时间；纵向 → 平移右轴（真实数值）。
-        // 全部基于手势起点 dragBase 的绝对插值，保证与鼠标位移严格 1:1。
+        // 拖拽只沿时间轴平移（基于手势起点 dragBase 的绝对 1:1 跟随）。
+        // 右轴保持原始自动缩放比例，拖动不改变 Y 轴范围。
         guard let base = dragBase else { return }
+        // 拖拽即进入"浏览历史"状态，停止实时跟随。
+        followLive = false
         let ptsPerSec = plot.plotW / timeRange
         if ptsPerSec > 0 {
             endTime = clampEnd(base.endTime - tr.width / ptsPerSec)
-        }
-        if base.rightMax > base.rightMin {
-            let ptsPerUnit = plot.plotH / (base.rightMax - base.rightMin)
-            if ptsPerUnit > 0 {
-                let shift = tr.height / ptsPerUnit
-                rightMin = base.rightMin + shift
-                rightMax = base.rightMax + shift
-                autoRight = false
-            }
         }
     }
 
@@ -273,13 +284,15 @@ struct PowerChartView: View {
             return
         }
         if abs(dx) > 0 {
+            // 横向滚动 = 平移时间到历史，停止实时跟随。
+            followLive = false
             let ptsPerSec = plot.plotW / timeRange
             if ptsPerSec > 0 {
                 endTime = clampEnd(endTime - dx / ptsPerSec)
             }
         }
         if dy != 0 {
-            // 纵向滚动 → 缩放时间窗口（钳制单次缩放，触控板慢滚仍平滑，鼠标滚轮不剧跳）。
+            // 纵向滚动 → 缩放时间窗口：右缘锚定（实时模式下保持贴最新），钳制单次缩放。
             zoomTime(by: bounded(exp(Double(-dy) * 0.02), 0.84, 1.19))
         }
     }
@@ -292,9 +305,8 @@ struct PowerChartView: View {
         var newRange = timeRange / factor
         if newRange > maxView { newRange = maxView }
         if newRange < minView { newRange = minView }
-        let center = endTime.addingTimeInterval(-timeRange / 2)
+        // 右缘锚定：缩放只改变时间跨度，不移动右缘，实时模式始终保持贴最新。
         timeRange = newRange
-        endTime = clampEnd(center.addingTimeInterval(newRange / 2))
     }
 
     private func zoomRight(by factor: Double) {
@@ -328,6 +340,7 @@ struct PowerChartView: View {
         timeRange = range
         endTime = Date()
         autoRight = true
+        followLive = true
     }
 
     private func timeText(_ seconds: TimeInterval) -> String {
@@ -611,7 +624,7 @@ private struct ChartDraw {
 // MARK: - 滚轮捕获（NSView 桥接）
 
 /// 捕获滚动事件并回调给 SwiftUI：dx / dy 为带符号位移，option 表示是否按住 Option。
-private struct ScrollWheelCatcher: NSViewRepresentable {
+struct ScrollWheelCatcher: NSViewRepresentable {
     var onScroll: (Double, Double, Bool) -> Void
 
     func makeNSView(context: Context) -> ScrollCatcherView {
@@ -626,7 +639,7 @@ private struct ScrollWheelCatcher: NSViewRepresentable {
     }
 }
 
-private final class ScrollCatcherView: NSView {
+final class ScrollCatcherView: NSView {
     var onScroll: ((Double, Double, Bool) -> Void)?
 
     override func scrollWheel(with event: NSEvent) {

@@ -9,6 +9,7 @@ final class FloatingPanelController: NSWindowController {
     private let settings: SettingsStore
     private let monitor: PowerMonitor
     private let logger = PowerLogger()
+    private let healthLogger = BatteryHealthLogger()
     private var chartController: PowerChartPanelController?
     private let updater = UpdateChecker()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -36,6 +37,8 @@ final class FloatingPanelController: NSWindowController {
         self.window = panel
 
         monitor.start()
+        // 电池健康日志随应用常驻运行，即使不开图表也能持续积累健康历史。
+        healthLogger.start()
         settings.onChange = { [weak self] in self?.applySettings() }
 
         buildStatusItem()
@@ -54,7 +57,10 @@ final class FloatingPanelController: NSWindowController {
         if let observer = moveObserver {
             NotificationCenter.default.removeObserver(observer)
         }
-        Task { @MainActor [weak self] in self?.monitor.stop() }
+        Task { @MainActor [weak self] in
+            self?.monitor.stop()
+            self?.healthLogger.stop()
+        }
     }
 
     // MARK: - 应用设置
@@ -209,7 +215,9 @@ final class FloatingPanelController: NSWindowController {
     }
 
     @objc private func openChart() {
-        chartController = PowerChartPanelController.makeIfNeeded(existing: chartController, logger: logger)
+        chartController = PowerChartPanelController.makeIfNeeded(existing: chartController,
+                                                                 logger: logger,
+                                                                 healthLogger: healthLogger)
         chartController?.showWindow(nil)
         window?.orderFront(nil) // 保证挂件仍在菜单之上可见
         NSApp.activate(ignoringOtherApps: true)
