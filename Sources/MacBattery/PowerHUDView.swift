@@ -1,102 +1,96 @@
 import SwiftUI
 
-/// 置顶挂件的 UI：
-/// 中央显示两行功率（整机 / 充电），外圈一圈圆环展示电量百分比。
+/// 置顶挂件 UI：外圈一条细圆环 = 电量百分比；
+/// 圆心垂直排列 电量% / 整机功率 / 充电功率，紧凑贴住圆环。
+/// 整体尺寸随 `scale` 缩放（基础边长会随 scale 变化）。
 struct PowerHUDView: View {
 
     @ObservedObject var monitor: PowerMonitor
+    /// 缩放系数（0.8 / 1.0 / 1.3…）
+    var scale: CGFloat = 1.0
 
-    private var progress: Double {
-        Double(monitor.batteryPercent) / 100.0
-    }
+    private var baseSide: CGFloat { 90 }
+    private var side: CGFloat { baseSide * scale }
+    private var ringWidth: CGFloat { 6 * scale }
+    private var pad: CGFloat { 3 * scale }
+
+    private var progress: Double { Double(monitor.batteryPercent) / 100.0 }
 
     private var ringColor: Color {
         let p = progress
         switch p {
-        case ..<0.2: return .red
-        case ..<0.4: return .orange
-        default:      return .green
+        case ..<0.2: return Color(red: 1.0, green: 0.30, blue: 0.30)
+        case ..<0.4: return Color(red: 1.0, green: 0.62, blue: 0.18)
+        default:      return Color(red: 0.20, green: 0.86, blue: 0.45)
         }
     }
 
     var body: some View {
         ZStack {
-            // 背景托盘：半透明暗色圆角，便于在任意壁纸上看清内容。
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(Color.black.opacity(0.35))
+            // 半透明暗色底盘，保证在任意壁纸上可读
+            Circle()
+                .fill(Color.black.opacity(0.32))
 
-            // 电量圆环
-            ZStack {
-                // 底环
-                Circle()
-                    .stroke(Color.white.opacity(0.15), lineWidth: 8)
+            // 电量圆环：底环 + 进度弧
+            Circle()
+                .stroke(Color.white.opacity(0.16), lineWidth: ringWidth)
 
-                // 电量进度弧
-                Circle()
-                    .trim(from: 0, to: progress)
-                    .stroke(
-                        AngularGradient(
-                            colors: [ringColor, ringColor.opacity(0.55)],
-                            center: .center
-                        ),
-                        style: StrokeStyle(lineWidth: 8, lineCap: .round)
-                    )
-                    .rotationEffect(.degrees(-90))
+            Circle()
+                .trim(from: 0, to: progress)
+                .stroke(
+                    AngularGradient(colors: [ringColor, ringColor.opacity(0.5)],
+                                    center: .center),
+                    style: StrokeStyle(lineWidth: ringWidth, lineCap: .round)
+                )
+                .rotationEffect(.degrees(-90))
 
-                // 中央两行功率
-                VStack(spacing: 4) {
-                    HStack(spacing: 5) {
-                        Text(monitor.systemWattsText)   // 整机功率
-                            .font(.system(size: 20, weight: .semibold, design: .rounded))
-                            .foregroundColor(.white)
-                        Text("W")
-                            .font(.system(size: 12, weight: .medium, design: .rounded))
-                            .foregroundColor(.white.opacity(0.6))
-                    }
+            // 圆心内容：电量% + 两行功率，紧扣圆环
+            VStack(spacing: 3 * scale) {
+                Text("\(monitor.batteryPercent)%")
+                    .font(.system(size: 11 * scale, weight: .semibold, design: .rounded))
+                    .foregroundColor(.white.opacity(0.92))
 
-                    HStack(spacing: 5) {
-                        Image(systemName: monitor.chargingWatts > 0 ? "bolt.fill" : "bolt.badge.clock")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(.yellow)
-                        Text(monitor.chargingText)      // 充电功率
-                            .font(.system(size: 13, weight: .regular, design: .rounded))
-                            .foregroundColor(.white.opacity(0.85))
-                        Text("W")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundColor(.white.opacity(0.5))
-                    }
+                // 第一行：整机功率
+                HStack(alignment: .firstTextBaseline, spacing: 2 * scale) {
+                    Text(systemValueText)
+                        .font(.system(size: 22 * scale, weight: .bold, design: .rounded))
+                        .foregroundColor(.white)
+                        .fixedSize()
+                    Text("W")
+                        .font(.system(size: 10 * scale, weight: .semibold, design: .rounded))
+                        .foregroundColor(.white.opacity(0.6))
+                }
+
+                // 第二行：充电功率
+                HStack(alignment: .center, spacing: 3 * scale) {
+                    Image(systemName: monitor.isCharging ? "bolt.fill" : "bolt.badge.clock")
+                        .font(.system(size: 9 * scale, weight: .bold))
+                        .foregroundColor(monitor.isCharging ? .yellow : .white.opacity(0.5))
+                    Text(chargeValueText)
+                        .font(.system(size: 12 * scale, weight: .semibold, design: .rounded))
+                        .foregroundColor(.white.opacity(0.9))
+                        .fixedSize()
+                    Text("W")
+                        .font(.system(size: 8 * scale, weight: .medium, design: .rounded))
+                        .foregroundColor(.white.opacity(0.5))
                 }
             }
-            .padding(10)
-
-            // 电量百分比角标（右下角小徽章）
-            Text("\(monitor.batteryPercent)%")
-                .font(.system(size: 10, weight: .bold, design: .rounded))
-                .foregroundColor(.white)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Capsule().fill(Color.black.opacity(0.45)))
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
-                .padding(8)
+            .padding(.top, 6 * scale)  // 给顶部进度弧 cap 留出空间
         }
-        .frame(width: 148, height: 184)
+        .frame(width: side, height: side)
     }
-}
 
-// MARK: - 展示文本
+    // MARK: - 文本
 
-private extension PowerMonitor {
-    /// 整机功率文本：读不到时显示 "--"
-    var systemWattsText: String {
-        systemWatts > 0
-            ? String(format: "%.1f", systemWatts)
+    private var systemValueText: String {
+        monitor.systemWatts > 0
+            ? String(format: "%.1f", monitor.systemWatts)
             : "--"
     }
 
-    /// 充电功率文本：未充电时显示 "0"
-    var chargingText: String {
-        chargingWatts > 0
-            ? String(format: "%.1f", chargingWatts)
-            : "0"
+    private var chargeValueText: String {
+        monitor.chargingWatts > 0
+            ? String(format: "%.1f", monitor.chargingWatts)
+            : (monitor.isCharging ? "…" : "0")
     }
 }

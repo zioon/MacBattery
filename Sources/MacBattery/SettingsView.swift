@@ -1,0 +1,65 @@
+import SwiftUI
+import AppKit
+
+/// 设置面板：大小、位置、鼠标穿透、整机功率估算上限（TDP）。
+struct SettingsView: View {
+    @ObservedObject var store: SettingsStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("MacBattery 设置").font(.headline)
+
+            Picker("大小", selection: $store.sizeRaw) {
+                ForEach(SizePreset.allCases, id: \.rawValue) { p in
+                    Text(p.label).tag(p.rawValue)
+                }
+            }
+
+            Picker("位置", selection: $store.cornerRaw) {
+                ForEach(Corner.allCases, id: \.rawValue) { c in
+                    Text(c.label).tag(c.rawValue)
+                }
+            }
+            if store.hasCustom {
+                Text("已在自定义位置（拖动挂件/重选四角可更改）")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            Toggle("鼠标穿透（开启后不可拖动）", isOn: $store.passthrough)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("整机功率估算上限 (TDP)")
+                    Spacer()
+                    Text("\(Int(store.tdpWatts)) W")
+                        .foregroundColor(.secondary)
+                }
+                Slider(value: $store.tdpWatts, in: 25...150, step: 5)
+                Text("整机功率的估算基准；若硬件 SMC 可读则直接用真实值。")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Text("提示：若整机功率偏低，可调高此值。")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            HStack {
+                Spacer()
+                Button("完成") {
+                    store.commit()
+                    NSApp.keyWindow?.close()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 340)
+
+        // 任何设置改变即持久化并应用
+        .onChange(of: store.sizeRaw) { _ in store.commit() }
+        .onChange(of: store.cornerRaw) { _ in store.commit() }
+        .onChange(of: store.passthrough) { _ in store.commit() }
+        .onChange(of: store.tdpWatts) { _ in store.commit() }
+    }
+}

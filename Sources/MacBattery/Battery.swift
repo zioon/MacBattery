@@ -21,30 +21,39 @@ enum BatteryReader {
         return 0
     }
 
-    /// 当前充电功率（瓦特）。通过 AppleSmartBattery 的 电压 x 电流 计算。
-    /// Amperage 单位为 mA，负号表示正在充电（相对放电方向）。返回绝对值，单位 W。
-    static func chargingWatts() -> Double {
+    /// 当前充电功率（瓦特）与是否正在充电。
+    ///
+    /// 通过 AppleSmartBattery 的 `Voltage`(mV) × `Amperage`(mA) 计算。
+    /// `Amperage` 为负时表示电流正在充入电池，取绝对值即为充电功率。
+    static func chargingStatus() -> (isCharging: Bool, watts: Double) {
         let service = IOServiceGetMatchingService(kIOMainPortDefault,
                                                   IOServiceMatching("AppleSmartBattery"))
-        guard service != 0 else { return 0 }
+        guard service != 0 else { return (false, 0) }
         defer { IOObjectRelease(service) }
 
         var unmanaged: Unmanaged<CFMutableDictionary>?
         guard IORegistryEntryCreateCFProperties(service, &unmanaged, kCFAllocatorDefault, 0)
             == kIOReturnSuccess,
             let props = unmanaged?.takeRetainedValue() as? [String: Any] else {
-            return 0
+            return (false, 0)
         }
 
-        // 注意：Amperage 和 Voltage 在部分机型上以字符串形式暴露，这里做兼容转换。
-        let ampere = intValue(props["Amperage"])     // mA
-        let volt = intValue(props["Voltage"])        // mV
-        guard ampere != 0, volt != 0 else { return 0 }
+        // Amperage(mA) 正=放电，负=正在充电；Voltage(mV)。
+        let ampere = intValue(props["Amperage"])
+        let volt = intValue(props["Voltage"])
+        let chargingFlag = intValue(props["IsCharging"])
 
-        // 只有电流为负（即真正在充电）时才按充电功率展示，否则返回 0。
-        guard ampere < 0 else { return 0 }
-        let watts = Double(abs(ampere)) * Double(volt) / 1_000_000.0
-        return watts
+        // 优先用 IsCharging 状态，其次用电流方向判断。
+        let isCharging = volt > 0 && ampere < 0
+        let isChargingFlag = chargingFlag == 1
+
+        guard volt > 0, ampere != 0 else { return (isChargingFlag, 0) }
+        // 只有真正在充电时按充电功率展示。
+        if isCharging || isChargingFlag {
+            let watts = Double(abs(ampere)) * Double(volt) / 1_000_000.0
+            return (true, watts)
+        }
+        return (false, 0)
     }
 
     /// 从注册表属性中尽量提取 Int（兼容 CFNumber 与 CFString 两种表示）。
