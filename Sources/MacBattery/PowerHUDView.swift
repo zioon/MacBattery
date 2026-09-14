@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// 置顶挂件 UI：矩形充电环（完整底环 + 电量进度）环绕中间两行功率；
-/// CPU / RAM 数据条以 overlay 方式紧贴环内左右内壁，不参与布局、不额外占空间。
+/// 置顶挂件 UI：外层矩形充电环（完整底环 + 电量进度）环绕中间两行功率；
+/// 内层一个整体的内环承接 CPU / RAM，各占周长一半并按占用率填充；
+/// 内环外壁与充电环内壁完全重合（几何上严丝合缝）。
 /// 整体尺寸随 `scale` 缩放（基础宽高会随 scale 变化）。
 struct PowerHUDView: View {
 
@@ -11,8 +12,25 @@ struct PowerHUDView: View {
 
     private var baseWidth: CGFloat { 58 }
     private var baseHeight: CGFloat { 58 }
+
+    // MARK: 充电环几何
+
     private var ringWidth: CGFloat { 4 * scale }
+    /// 背景圆角（环外缘需与之对齐）。
     private var ringCorner: CGFloat { 14 * scale }
+    /// 充电环路径圆角：环整体内缩半个线宽后再描边，描边会向外扩半个线宽，
+    /// 因此路径圆角取 `ringCorner - ringWidth/2`，外缘圆角才等于背景圆角。
+    private var ringStrokeRadius: CGFloat { ringCorner - ringWidth / 2 }
+    /// 充电环内壁圆角：路径圆角向内再收半个线宽。
+    private var chargeInnerRadius: CGFloat { ringStrokeRadius - ringWidth / 2 }
+
+    // MARK: 内环几何（CPU / RAM 合用）
+
+    private var innerRingWidth: CGFloat { 3 * scale }
+    /// 内环路径圆角：外壁圆角 = 路径圆角 + 内环宽/2，要等于充电环内壁圆角。
+    private var innerRingRadius: CGFloat { chargeInnerRadius - innerRingWidth / 2 }
+    /// 内环路径内缩：外壁内缩 = 内缩 - 内环宽/2，要等于充电环内壁内缩（ringWidth）。
+    private var innerRingInset: CGFloat { ringWidth + innerRingWidth / 2 }
 
     private var progress: Double { Double(monitor.batteryPercent) / 100.0 }
 
@@ -37,10 +55,10 @@ struct PowerHUDView: View {
             // 充电环：完整底环 + 电量进度。
             // 整体内缩半个线宽，避免描边一半被面板边缘裁切（否则环会显得断裂）。
             ZStack {
-                RoundedRectangle(cornerRadius: ringCorner)
+                RoundedRectangle(cornerRadius: ringStrokeRadius)
                     .stroke(Color.white.opacity(0.28), lineWidth: ringWidth)
 
-                RoundedRectangle(cornerRadius: ringCorner)
+                RoundedRectangle(cornerRadius: ringStrokeRadius)
                     .trim(from: 0, to: progress)
                     .stroke(
                         LinearGradient(colors: [barColor, barColor.opacity(0.55)],
@@ -49,6 +67,26 @@ struct PowerHUDView: View {
                     )
             }
             .padding(ringWidth / 2)
+
+            // 内环：一个整体，CPU 占前半环、RAM 占后半环，各按占用率填充。
+            // 外壁与充电环内壁重合。
+            ZStack {
+                RoundedRectangle(cornerRadius: innerRingRadius)
+                    .stroke(Color.white.opacity(0.15), lineWidth: innerRingWidth)
+
+                // CPU：前半环
+                RoundedRectangle(cornerRadius: innerRingRadius)
+                    .trim(from: 0, to: 0.5 * CGFloat(monitor.cpuUsage))
+                    .stroke(cpuColor,
+                            style: StrokeStyle(lineWidth: innerRingWidth, lineCap: .round))
+
+                // RAM：后半环
+                RoundedRectangle(cornerRadius: innerRingRadius)
+                    .trim(from: 0.5, to: 0.5 + 0.5 * CGFloat(monitor.memoryUsage))
+                    .stroke(ramColor,
+                            style: StrokeStyle(lineWidth: innerRingWidth, lineCap: .round))
+            }
+            .padding(innerRingInset)
 
             // 中间两行功率
             VStack(spacing: 1.5 * scale) {
@@ -75,20 +113,6 @@ struct PowerHUDView: View {
                         .foregroundColor(.white.opacity(0.5))
                 }
             }
-
-            // 左侧 CPU 数据条：紧贴环内左壁
-            InnerBar(label: "CPU", value: monitor.cpuUsage,
-                     color: cpuColor, scale: scale, labelAlignment: .leading)
-                .padding(.leading, ringWidth + 1.5 * scale)
-                .padding(.vertical, ringWidth + 3 * scale)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-
-            // 右侧 RAM 数据条：紧贴环内右壁
-            InnerBar(label: "RAM", value: monitor.memoryUsage,
-                     color: ramColor, scale: scale, labelAlignment: .trailing)
-                .padding(.trailing, ringWidth + 1.5 * scale)
-                .padding(.vertical, ringWidth + 3 * scale)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
         }
         .frame(width: baseWidth * scale, height: baseHeight * scale)
     }
@@ -105,37 +129,5 @@ struct PowerHUDView: View {
         monitor.chargingWatts > 0
             ? String(format: "%.1f", monitor.chargingWatts)
             : (monitor.isCharging ? "…" : "0")
-    }
-}
-
-/// 紧贴环内壁的竖向数据条：细条 + 自底向上的填充，条内侧跟一行极小标签。
-private struct InnerBar: View {
-    var label: String
-    var value: Double
-    var color: Color
-    var scale: CGFloat
-    /// 标签相对细条的对齐方向（左侧条用 .leading，右侧条用 .trailing）。
-    var labelAlignment: HorizontalAlignment
-
-    private var width: CGFloat { 4 * scale }
-
-    var body: some View {
-        VStack(alignment: labelAlignment, spacing: 1.5 * scale) {
-            GeometryReader { geo in
-                ZStack(alignment: .bottom) {
-                    RoundedRectangle(cornerRadius: width / 2)
-                        .fill(Color.white.opacity(0.15))
-                    RoundedRectangle(cornerRadius: width / 2)
-                        .fill(color)
-                        .frame(height: max(geo.size.height * CGFloat(value), 1))
-                }
-            }
-            .frame(width: width)
-
-            Text(label)
-                .font(.system(size: 5 * scale, weight: .semibold, design: .rounded))
-                .foregroundColor(color)
-                .fixedSize()
-        }
     }
 }
