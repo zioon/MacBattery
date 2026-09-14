@@ -118,6 +118,12 @@ struct PowerHUDView: View {
                         .font(.system(size: 6 * scale, weight: .medium, design: .rounded))
                         .foregroundColor(.white.opacity(0.5))
                 }
+
+                // 充电电压·电流小字（写在充电功率下方）
+                Text(voltageAmpsText)
+                    .font(.system(size: 5.5 * scale, weight: .medium, design: .rounded))
+                    .foregroundColor(.white.opacity(0.6))
+                    .fixedSize()
             }
         }
         // 四周留出透明余量，供外发光扩散（可见底盘仍为 contentSize×contentSize）
@@ -168,6 +174,13 @@ struct PowerHUDView: View {
         monitor.chargingWatts > 0
             ? String(format: "%.1f", monitor.chargingWatts)
             : (isCharging ? "…" : "0")
+    }
+
+    /// 充电电压·电流，写在充电功率下方。无有效读值/未充电时显示占位，保持布局稳定。
+    private var voltageAmpsText: String {
+        monitor.chargingVoltage > 0 && monitor.chargingCurrent > 0
+            ? String(format: "%.1fV · %.1fA", monitor.chargingVoltage, monitor.chargingCurrent)
+            : "--V · --A"
     }
 }
 

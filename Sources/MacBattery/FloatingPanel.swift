@@ -8,6 +8,8 @@ final class FloatingPanelController: NSWindowController {
 
     private let settings: SettingsStore
     private let monitor: PowerMonitor
+    private let logger = PowerLogger()
+    private var chartController: PowerChartPanelController?
     private let updater = UpdateChecker()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var settingsWindow: NSWindow?
@@ -22,7 +24,7 @@ final class FloatingPanelController: NSWindowController {
 
     init() {
         settings = SettingsStore()
-        monitor = PowerMonitor(settings: settings)
+        monitor = PowerMonitor(settings: settings, logger: logger)
         super.init(window: nil)
 
         let panel = FloatingPanel(
@@ -132,6 +134,12 @@ final class FloatingPanelController: NSWindowController {
         let settingsItem = NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
+
+        // 历史图表
+        let chartItem = NSMenuItem(title: "历史图表…", action: #selector(openChart), keyEquivalent: "g")
+        chartItem.target = self
+        menu.addItem(chartItem)
+
         menu.addItem(.separator())
 
         // 位置子菜单
@@ -197,6 +205,13 @@ final class FloatingPanelController: NSWindowController {
         }
         settingsWindow?.center()
         settingsWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func openChart() {
+        chartController = PowerChartPanelController.makeIfNeeded(existing: chartController, logger: logger)
+        chartController?.showWindow(nil)
+        window?.orderFront(nil) // 保证挂件仍在菜单之上可见
         NSApp.activate(ignoringOtherApps: true)
     }
 

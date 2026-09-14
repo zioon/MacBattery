@@ -29,39 +29,44 @@ enum BatteryReader {
     ///
     /// 通过 AppleSmartBattery 的 `Voltage`(mV) × `Amperage`(mA) 计算。
     /// `Amperage` 为负时表示电流正在充入电池，取绝对值即为充电功率。
-    static func chargingStatus() -> (isCharging: Bool, watts: Double) {
+    static func chargingStatus() -> (isCharging: Bool, watts: Double, voltage: Double, current: Double) {
         let service = currentService()
-        guard service != 0, var props = readProperties(service) else { return (false, 0) }
+        guard service != 0, var props = readProperties(service) else { return (false, 0, 0, 0) }
 
-        let ampere = intValue(props["Amperage"])
-        let volt = intValue(props["Voltage"])
-        let chargingFlag = intValue(props["IsCharging"])
+        var ampere = intValue(props["Amperage"])
+        var volt = intValue(props["Voltage"])
+        var chargingFlag = intValue(props["IsCharging"])
 
         // 三个关键属性都读不到 → 缓存的句柄可能因休眠失效，重建服务并重试一次。
         if ampere == 0 && volt == 0 && chargingFlag == 0 {
             let rebuilt = rebuildService()
             if rebuilt != 0, let retry = readProperties(rebuilt) {
                 props = retry
+                ampere = intValue(retry["Amperage"])
+                volt = intValue(retry["Voltage"])
+                chargingFlag = intValue(retry["IsCharging"])
             }
         }
 
-        // (volt / ampere / chargingFlag 在重试后重新取值)
-        let ampereFinal = intValue(props["Amperage"])
-        let voltFinal = intValue(props["Voltage"])
-        let chargingFlagFinal = intValue(props["IsCharging"])
-
-        // Amperage(mA) 正=放电，负=正在充电；Voltage(mV)。
-        // 优先用 IsCharging 状态，其次用电流方向判断。
-        let isCharging = voltFinal > 0 && ampereFinal < 0
-        let isChargingFlag = chargingFlagFinal == 1
-
-        guard voltFinal > 0, ampereFinal != 0 else { return (isChargingFlag, 0) }
-        // 只有真正在充电时按充电功率展示。
-        if isCharging || isChargingFlag {
-            let watts = Double(abs(ampereFinal)) * Double(voltFinal) / 1_000_000.0
-            return (true, watts)
+        // Amperage(mA) 负=充入、正=放电；Voltage(mV)。
+        // 以官方 IsCharging 标志为充电状态的权威依据：仅当该标志缺失（罕见机型）时，
+        // 才退回「电流为负且电压有效」来兜底——避免未充电时电流方向的瞬时负值被误报成正在充电。
+        let isCharging: Bool
+        if props["IsCharging"] != nil {
+            isCharging = chargingFlag == 1
+        } else {
+            isCharging = ampere < 0 && volt > 0
         }
-        return (false, 0)
+
+        // 电压/电流（仅用于展示，单位为 V / A）。
+        let voltValue = Double(volt) / 1000.0
+        guard isCharging else { return (false, 0, voltValue, 0) }
+
+        // 有官方充电标志，正/负电流绝对值即充电电流；无电压读数时不强行填功率。
+        let ampereAbs = Double(abs(ampere))
+        let watts = volt > 0 ? ampereAbs * Double(volt) / 1_000_000.0 : 0
+        let current = ampere < 0 ? ampereAbs / 1000.0 : 0
+        return (true, watts, voltValue, current)
     }
 
     /// 读取 AppleSmartBattery 的完整属性字典；失败返回 nil（调用方据此重建句柄重试）。
