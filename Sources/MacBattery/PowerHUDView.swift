@@ -74,13 +74,13 @@ struct PowerHUDView: View {
                 RoundedRectangle(cornerRadius: innerRingRadius)
                     .stroke(Color.white.opacity(0.15), lineWidth: innerRingWidth)
 
-                // CPU：前半环
+                // CPU：前半环，与 RAM 同基点（0.5）反向生长
                 RoundedRectangle(cornerRadius: innerRingRadius)
-                    .trim(from: 0, to: 0.5 * CGFloat(monitor.cpuUsage))
+                    .trim(from: 0.5 - 0.5 * CGFloat(monitor.cpuUsage), to: 0.5)
                     .stroke(cpuColor,
                             style: StrokeStyle(lineWidth: innerRingWidth, lineCap: .round))
 
-                // RAM：后半环
+                // RAM：后半环，自基点（0.5）正向生长
                 RoundedRectangle(cornerRadius: innerRingRadius)
                     .trim(from: 0.5, to: 0.5 + 0.5 * CGFloat(monitor.memoryUsage))
                     .stroke(ramColor,

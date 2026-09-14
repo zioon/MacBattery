@@ -1,9 +1,10 @@
 import SwiftUI
 import AppKit
 
-/// 设置面板：大小、位置、鼠标穿透、整机功率估算上限（TDP）。
+/// 设置面板：大小、位置、鼠标穿透、整机功率估算上限（TDP）、在线更新。
 struct SettingsView: View {
     @ObservedObject var store: SettingsStore
+    @ObservedObject var updater: UpdateChecker
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -40,6 +41,23 @@ struct SettingsView: View {
                     .font(.caption2)
                     .foregroundColor(.secondary)
                 Text("把它调到接近你机型的额定功耗（如轻薄本 28W、标压 U 45W、H 系 60W+），整机功率会更贴近真实。")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("当前版本 \(AppVersion.current)")
+                    Spacer()
+                    Button("检查更新") { updater.checkForUpdates(interactive: true) }
+                        .disabled(updater.state.isBusy)
+                }
+                Text(updater.state.summary)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                Text("启动时会自动检查，发现新版本将自动下载 DMG 到「下载」文件夹。")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }

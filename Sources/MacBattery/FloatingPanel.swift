@@ -8,6 +8,7 @@ final class FloatingPanelController: NSWindowController {
 
     private let settings: SettingsStore
     private let monitor: PowerMonitor
+    private let updater = UpdateChecker()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var settingsWindow: NSWindow?
     private var moveObserver: NSObjectProtocol?
@@ -36,6 +37,9 @@ final class FloatingPanelController: NSWindowController {
         applySettings()
         panel.makeKeyAndOrderFront(nil)
         observeWindowMove(panel)
+
+        // 启动时静默检查一次更新：仅在发现并下载到新版本时才提示，不打扰日常使用。
+        updater.checkForUpdates(interactive: false)
     }
 
     @available(*, unavailable)
@@ -160,6 +164,11 @@ final class FloatingPanelController: NSWindowController {
         menu.addItem(passthroughItem)
 
         menu.addItem(.separator())
+        let updateItem = NSMenuItem(title: "检查更新…", action: #selector(checkForUpdates), keyEquivalent: "")
+        updateItem.target = self
+        menu.addItem(updateItem)
+
+        menu.addItem(.separator())
         let quitItem = NSMenuItem(title: "退出 MacBattery", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -169,12 +178,15 @@ final class FloatingPanelController: NSWindowController {
 
     @objc private func openSettings() {
         if settingsWindow == nil {
-            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 340, height: 380),
+            let hosting = NSHostingView(rootView: SettingsView(store: settings, updater: updater))
+            hosting.layout()
+            let height = max(420, hosting.fittingSize.height)
+            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 340, height: height),
                                styleMask: [.titled, .closable],
                                backing: .buffered,
                                defer: false)
             win.title = "MacBattery 设置"
-            win.contentView = NSHostingView(rootView: SettingsView(store: settings))
+            win.contentView = hosting
             win.isReleasedWhenClosed = false
             settingsWindow = win
         }
@@ -201,6 +213,10 @@ final class FloatingPanelController: NSWindowController {
         settings.commit()
         sender.state = settings.passthrough ? .on : .off
         rebuildMenuCheckmarks()
+    }
+
+    @objc private func checkForUpdates() {
+        updater.checkForUpdates(interactive: true)
     }
 
     @objc private func quit() {

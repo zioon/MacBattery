@@ -45,6 +45,17 @@ swift build -c release --arch arm64   # 按你的架构调整
 
 ---
 
+## 在线自动更新
+
+- **启动时自动检查**：查询 GitHub Releases（`zioon/MacBattery`）最新版本，与当前版本比对。
+- **发现新版本自动下载**：把 DMG 下载到「下载」文件夹（命名为 `MacBattery-<版本>.dmg`），并弹窗提示，可在访达中直接打开安装。
+- **手动检查**：菜单栏图标 →「检查更新…」，或设置面板中的「检查更新」按钮。
+- 版本号取自 `.app` 的 `Info.plist` 的 `CFBundleShortVersionString`（发版时由 CI 用 tag 覆盖）；
+  `swift run` 直接运行裸二进制时回退到 `Updater.swift` 中的 `AppVersion.fallback`。
+- 安装：打开 DMG，把 `MacBattery.app` 拖入「应用程序」覆盖旧版本即可（应用不会自我替换，避免签名与权限风险）。
+
+---
+
 ## 数据来源与限制
 
 | 数据 | 来源 | 权限 |
@@ -95,6 +106,7 @@ Sources/MacBattery/
 ├── FloatingPanel.swift # 置顶透明穿透浮窗 + 位置
 ├── PowerHUDView.swift  # 圆环电量 + 两行功率 UI
 ├── PowerMonitor.swift  # 每秒刷新数据
+├── Updater.swift       # 在线自动更新（GitHub Releases + DMG 下载）
 ├── Battery.swift       # 电量 + 充电功率（IOKit 官方 API）
 └── SMC.swift           # AppleSMC 整机功率读取
 ```
