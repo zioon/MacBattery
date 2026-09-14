@@ -13,6 +13,11 @@ let package = Package(
             path: "Sources/SMCBridge"
         ),
         .executableTarget(
+            name: "MacBatteryHelper",
+            dependencies: ["SMCBridge"],
+            path: "Sources/MacBatteryHelper"
+        ),
+        .executableTarget(
             name: "MacBattery",
             dependencies: ["SMCBridge"],
             path: "Sources/MacBattery"

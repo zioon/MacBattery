@@ -1,48 +1,33 @@
 import Foundation
 import Darwin
 
-/// 整机功率：优先尝试 SMC 读取真实值；读不到（无权限 / 该机型无此键）时，
-/// 回退为「CPU 使用率 × 用户配置的最大功耗」的估算值，保证始终有数值可显示。
+/// 整机功率。优先级：
+///  1) SMC 直读真实值（`PSTR` 等；无权限时可能读不到）
+///  2) 已安装 root helper 守护时，读它实时写入的 `/tmp/macbattery_power.json` 真实功耗
+///  3) 均不可用时，回退「CPU 功耗曲线 + 平台基础功耗」估算，保证始终有值显示
 enum SystemPower {
 
-    /// 整机功率（瓦特）。
-    /// 优先 SMC 真实读数（Apple Silicon 的 PSTR 等；Intel 通常不可用）；
-    /// 读不到时按「CPU 功耗曲线 + 平台基础功耗」估算，TDP 可取设置里的机型最大功耗。
-    /// - Parameter usage: 可选的 CPU 使用率（0...1）。传入可避免与外部再算一次重复采样。
-    static func watts(tdp: Double, usage: Double? = nil) -> Double {
+    static func watts(tdp: Double) -> Double {
         let real = SMCReader.systemWatts()
         if real > 0 { return real }
 
-        let u = max(0, min(1, usage ?? cpuUsage()))
-        // CPU 功耗大致曲线：低负载仍有基础，随使用率抬升逼近 TDP
+        let helper = readHelperPower()
+        if helper > 0 { return helper }
+
+        let u = max(0, min(1, cpuUsage()))
         let cpuPower = tdp * (0.05 + 0.95 * u)
-        // 平台基础功耗：屏幕 / 内存 / 固态 / 无线等，随负载轻微上升
         let platformPower = 7 + 3 * u
         return cpuPower + platformPower
     }
 
-    /// 当前内存使用率（0...1）。
-    /// 用 host_statistics64 读取活动/有线/压缩页数，除以物理内存总量。
-    static func memoryUsage() -> Double {
-        var stats = vm_statistics64_data_t()
-        var count = mach_msg_type_number_t(
-            MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
-        let kr = withUnsafeMutablePointer(to: &stats) { ptr in
-            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPtr in
-                host_statistics64(mach_host_self(), HOST_VM_INFO64, intPtr, &count)
-            }
-        }
-        guard kr == KERN_SUCCESS else { return 0 }
-
-        var pageSize: vm_size_t = 0
-        host_page_size(mach_host_self(), &pageSize)
-        guard pageSize > 0 else { return 0 }
-
-        let used = Double(stats.active_count + stats.wired_count + stats.compressed_count)
-            * Double(pageSize)
-        let total = Double(ProcessInfo.processInfo.physicalMemory)
-        guard total > 0 else { return 0 }
-        return min(1, max(0, used / total))
+    /// 读取 root helper 写入的真实整机功率。helper 未安装时返回 0。
+    private static func readHelperPower() -> Double {
+        let url = URL(fileURLWithPath: "/tmp/macbattery_power.json")
+        guard let data = try? Data(contentsOf: url) else { return 0 }
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let value = obj["systemPower"] as? Double,
+              value > 0 else { return 0 }
+        return value
     }
 
     /// 当前 CPU 平均使用率（0...1）。用两次调用之间的 tick 增量计算，

@@ -68,6 +68,23 @@ sudo powermetrics --samplers smc -i 1000
 
 若你希望通用性更强（覆盖更多 Intel 机型 / 自动回退到 IOReport 累加预估），可后续扩展 `Sources/MacBattery/SMC.swift` 与 `PowerMonitor.swift`。
 
+## 真实整机功率（可选，需一次性 sudo）
+
+Intel 机型上 macOS 不向普通权限暴露系统总功耗（`PSTR`），因此默认整机功率为估算值。
+如需**真实整机功率**，可安装一个 root helper 守护（与 MacMonitor 同思路，一次性授权）：
+
+```bash
+cd 工程目录
+sudo ./Scripts/install_helper.sh
+```
+
+- helper 以 root 常驻，每秒读一次 SMC `PSTR` 整机功耗，写入 `/tmp/macbattery_power.json`；
+- 挂件每秒读取该文件，读到即显示真实值；
+- 验证：`cat /tmp/macbattery_power.json`
+- 卸载：`sudo launchctl bootout system /Library/LaunchDaemons/com.zioon.macbattery.helper.plist` 再删掉该 plist 与 `/Library/PrivilegedHelperTools/macbattery-helper`。
+
+DMG 内已附带 `macbattery-helper` 二进制与 `install_helper.sh`，解压后在挂件工程内执行即可。
+
 ---
 
 ## 结构
