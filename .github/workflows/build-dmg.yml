@@ -1,8 +1,7 @@
-name: Build & Release DMG
+name: Build and release DMG
 
-# 推送 v* 标签时自动构建 x86_64 版本并发布为 GitHub Release（附带 .dmg）。
-# 也支持手动触发（Actions 页面 Run workflow）。
-on:
+# Trigger on version tags (v*) and allow manual dispatch.
+"on":
   push:
     tags:
       - 'v*'
@@ -13,7 +12,7 @@ permissions:
 
 jobs:
   build-and-release:
-    # Intel 构建机，产物为 x86_64，匹配 Intel Mac。
+    # Intel build runner -> x86_64 binary, matching Intel Macs.
     runs-on: macos-13
     steps:
       - name: Checkout
@@ -47,9 +46,7 @@ jobs:
 </dict>
 </plist>
 PLIST
-          # 干净卸载 Swift 运行库依赖并签名（ad-hoc），保证拷到别的机器可运行
-          cp .build/release/MacBattery dist/temp_bin 2>/dev/null || true
-          codesign --force --sign - "$APP" >/dev/null 2>&1 || echo "(codesign skipped)"
+          codesign --force --sign - "$APP" >/dev/null 2>&1 || true
 
       - name: Create DMG
         run: |
@@ -59,7 +56,6 @@ PLIST
             -srcfolder dist \
             -ov \
             -format UDZO \
-            -fs HFS+ \
             MacBattery.dmg
 
       - name: Publish Release
