@@ -7,7 +7,7 @@ import IOKit.ps
 enum BatteryReader {
 
     /// 缓存的 AppleSmartBattery 服务句柄（0 表示尚未匹配）。复用避免高频反复匹配/释放。
-    private static var batteryService: io_service_t = 0
+    private static var cachedService: io_service_t = 0
 
     /// 当前电量百分比（0...100）
     static func level() -> Int {
@@ -30,7 +30,7 @@ enum BatteryReader {
     /// 通过 AppleSmartBattery 的 `Voltage`(mV) × `Amperage`(mA) 计算。
     /// `Amperage` 为负时表示电流正在充入电池，取绝对值即为充电功率。
     static func chargingStatus() -> (isCharging: Bool, watts: Double) {
-        var service = batteryService()
+        var service = currentService()
         guard service != 0 else { return (false, 0) }
 
         var ampere = registryInt(service, "Amperage") ?? 0
@@ -39,7 +39,7 @@ enum BatteryReader {
 
         // 三个关键属性都读不到 → 缓存的句柄可能因休眠失效，重建服务并重试一次。
         if ampere == 0 && volt == 0 && chargingFlag == 0 {
-            let rebuilt = rebuildBatteryService()
+            let rebuilt = rebuildService()
             if rebuilt != 0 {
                 service = rebuilt
                 ampere = registryInt(service, "Amperage") ?? 0
@@ -63,20 +63,20 @@ enum BatteryReader {
     }
 
     /// 获取缓存的 AppleSmartBattery 服务句柄；首次调用时匹配一次并复用。
-    private static func batteryService() -> io_service_t {
-        if batteryService == 0 {
-            batteryService = IOServiceGetMatchingService(kIOMainPortDefault,
-                                                         IOServiceMatching("AppleSmartBattery"))
+    private static func currentService() -> io_service_t {
+        if cachedService == 0 {
+            cachedService = IOServiceGetMatchingService(kIOMainPortDefault,
+                                                        IOServiceMatching("AppleSmartBattery"))
         }
-        return batteryService
+        return cachedService
     }
 
     /// 释放无效句柄并重新匹配，返回新句柄（失败为 0）。
-    private static func rebuildBatteryService() -> io_service_t {
-        if batteryService != 0 { IOObjectRelease(batteryService); batteryService = 0 }
-        batteryService = IOServiceGetMatchingService(kIOMainPortDefault,
-                                                     IOServiceMatching("AppleSmartBattery"))
-        return batteryService
+    private static func rebuildService() -> io_service_t {
+        if cachedService != 0 { IOObjectRelease(cachedService); cachedService = 0 }
+        cachedService = IOServiceGetMatchingService(kIOMainPortDefault,
+                                                    IOServiceMatching("AppleSmartBattery"))
+        return cachedService
     }
 
     /// 读取 IORegistry 服务上单个数值属性（兼容 CFNumber 与 CFString 两种表示）。
