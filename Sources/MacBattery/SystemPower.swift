@@ -7,17 +7,40 @@ import Darwin
 ///  3) 均不可用时，回退「CPU 功耗曲线 + 平台基础功耗」估算，保证始终有值显示
 enum SystemPower {
 
-    static func watts(tdp: Double) -> Double {
+    static func watts(tdp: Double, usage: Double? = nil) -> Double {
         let real = SMCReader.systemWatts()
         if real > 0 { return real }
 
         let helper = readHelperPower()
         if helper > 0 { return helper }
 
-        let u = max(0, min(1, cpuUsage()))
+        let u = max(0, min(1, usage ?? cpuUsage()))
         let cpuPower = tdp * (0.05 + 0.95 * u)
         let platformPower = 7 + 3 * u
         return cpuPower + platformPower
+    }
+
+    /// 当前内存使用率（0...1）。用 host_statistics64 读取活动/有线/压缩页数，除以物理内存总量。
+    static func memoryUsage() -> Double {
+        var stats = vm_statistics64_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
+        let kr = withUnsafeMutablePointer(to: &stats) { ptr in
+            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPtr in
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, intPtr, &count)
+            }
+        }
+        guard kr == KERN_SUCCESS else { return 0 }
+
+        var pageSize: vm_size_t = 0
+        host_page_size(mach_host_self(), &pageSize)
+        guard pageSize > 0 else { return 0 }
+
+        let used = Double(stats.active_count + stats.wire_count + stats.compressor_page_count)
+            * Double(pageSize)
+        let total = Double(ProcessInfo.processInfo.physicalMemory)
+        guard total > 0 else { return 0 }
+        return min(1, max(0, used / total))
     }
 
     /// 读取 root helper 写入的真实整机功率。helper 未安装时返回 0。
