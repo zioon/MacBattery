@@ -14,6 +14,10 @@ final class PowerMonitor: ObservableObject {
     @Published var chargingWatts: Double = 0
     /// 是否正在充电
     @Published var isCharging: Bool = false
+    /// CPU 使用率（0...1）
+    @Published var cpuUsage: Double = 0
+    /// 内存使用率（0...1）
+    @Published var memoryUsage: Double = 0
 
     private let settings: SettingsStore
     private var timer: Timer?
@@ -47,6 +51,11 @@ final class PowerMonitor: ObservableObject {
         isCharging = charging.isCharging
         chargingWatts = charging.watts
 
-        systemWatts = SystemPower.watts(tdp: settings.tdpWatts)
+        // 先读一次 CPU 使用率，整机功率估算复用同一采样，避免重复计算。
+        let u = SystemPower.cpuUsage()
+        cpuUsage = u
+        memoryUsage = SystemPower.memoryUsage()
+
+        systemWatts = SystemPower.watts(tdp: settings.tdpWatts, usage: u)
     }
 }

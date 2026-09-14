@@ -12,8 +12,9 @@ final class FloatingPanelController: NSWindowController {
     private var settingsWindow: NSWindow?
     private var moveObserver: NSObjectProtocol?
 
-    /// 挂件在 scale=1 时的基础边长（与 PowerHUDView 保持一致）。
-    private let baseSide: CGFloat = 90
+    /// 挂件在 scale=1 时的基础宽高（与 PowerHUDView 保持一致）。
+    private let baseWidth: CGFloat = 296
+    private let baseHeight: CGFloat = 96
 
     init() {
         settings = SettingsStore()
@@ -21,7 +22,7 @@ final class FloatingPanelController: NSWindowController {
         super.init(window: nil)
 
         let panel = FloatingPanel(
-            contentRect: NSRect(x: 0, y: 0, width: baseSide, height: baseSide),
+            contentRect: NSRect(x: 0, y: 0, width: baseWidth, height: baseHeight),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -54,14 +55,15 @@ final class FloatingPanelController: NSWindowController {
         guard let panel = window as? NSPanel else { return }
 
         let scale = (SizePreset(rawValue: settings.sizeRaw) ?? .medium).scale
-        let side = baseSide * scale
+        let width = baseWidth * scale
+        let height = baseHeight * scale
 
         let hosting = NSHostingView(rootView: PowerHUDView(monitor: monitor, scale: scale))
-        hosting.frame = NSRect(x: 0, y: 0, width: side, height: side)
+        hosting.frame = NSRect(x: 0, y: 0, width: width, height: height)
         hosting.autoresizingMask = []
 
         panel.contentView = hosting
-        panel.setContentSize(NSSize(width: side, height: side))
+        panel.setContentSize(NSSize(width: width, height: height))
 
         panel.ignoresMouseEvents = settings.passthrough
         panel.isMovableByWindowBackground = !settings.passthrough
