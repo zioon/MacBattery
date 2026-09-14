@@ -1,12 +1,29 @@
 # MacBattery
 
-一款 macOS 置顶挂件（HUD），实时显示：
+<p align="center">
+  <img src="Resources/screenshot.png" width="180" alt="MacBattery 运行截图" />
+</p>
 
-- **电量圆环**：外圈一圈进度弧 = 电量百分比，右下角有小百分比徽章
+<div align="center">
+
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/zioon/MacBattery?style=flat-square&label=release)](https://github.com/zioon/MacBattery/releases)
+[![GitHub Actions status](https://img.shields.io/github/actions/workflow/status/zioon/MacBattery/build-dmg.yml?style=flat-square&label=build)](https://github.com/zioon/MacBattery/actions)
+[![Platform macOS 12+](https://img.shields.io/badge/platform-macOS%2012%2B-black?style=flat-square&logo=apple&logoColor=white)]()
+[![Swift](https://img.shields.io/badge/Swift-5.7-orange?style=flat-square&logo=swift&logoColor=white)]()
+
+</div>
+
+一款 macOS 置顶挂件（HUD），实时显示电脑电量、充电功率与整机功率，并附带历史功率图表、电池健康记录与应用内更新。
+
+- **电量圆环**：外圈一圈进度弧 = 电量百分比，环色随电量平滑过渡（红 → 橙 → 黄绿 → 绿 → 青绿），右下角有小百分比徽章
+- **充电环**：充电时进度弧外侧出现一圈矩形充电环，带呼吸光晕 / 扫过高光 / 闪电脉冲等特效，颜色随电量与充电状态变化
 - **整机功率**（W）：第一行大数字
-- **充电功率**（W）：第二行，充电中显示 ⚡ 图标与瓦数
+- **充电功率**（W）：第二行，充电中显示 ⚡ 图标与瓦数，下方附电压 · 电流小字（如 `12.3V · 1.2A`）
+- **CPU / RAM**：内圈上下半环实时显示 CPU 与内存占用
+- **历史图表**：记录并可视化电量、充电电压 / 电流、整机功率与 CPU / 内存占用
+- **电池健康**：记录并可视化循环次数、当前 / 设计容量与健康度曲线
 
-窗口透明、置顶、鼠标穿透，不阻塞任何操作。默认 Xcode/SwiftUI 开发，无第三方依赖。
+窗口透明、置顶、鼠标穿透，不阻塞任何操作。纯 Xcode/SwiftUI 开发，仅依赖系统自带的 SMC/IOKit 接口，无第三方依赖。
 
 > 目标平台：macOS 12+，**Intel Mac 优先**（整机功率走 SMC 读取）。
 
@@ -39,9 +56,11 @@ swift build -c release --arch arm64   # 按你的架构调整
 # 并补一个最小 Info.plist，即可双击运行、固定到 Dock。
 ```
 
-### 退出
+### 交互
 
-在运行它的终端里按 `Ctrl+C` 即可。
+- Ctrl + C 在运行它的终端里退出；
+- 菜单栏图标提供全部窗口入口与「检查更新…」（⌘G 历史图表、⌘H 电池健康、⌘, 设置）；
+- 历史图表 / 电池健康窗口支持滚轮缩放时间窗、拖拽平移、鼠标悬停看数值。
 
 ---
 
@@ -61,7 +80,9 @@ swift build -c release --arch arm64   # 按你的架构调整
 | 数据 | 来源 | 权限 |
 |---|---|---|
 | 电量百分比 | IOKit Power Sources（`IOPSCopyPowerSourcesInfo`） | 无需 root |
-| 充电功率 | AppleSmartBattery 电压 × 电流 | 无需 root |
+| 充电功率 | AppleSmartBattery 电压 × 电流（充电时取电流绝对值） | 无需 root |
+| 电压 · 电流小字 | AppleSmartBattery | 无需 root |
+| CPU / 内存 | POSIX / 系统接口 | 无需 root |
 | 整机功率 | AppleSMC（候选功耗键自动探测） | 视机型/系统；读不到时显示 `--` |
 
 ### 关于整机功率
@@ -98,21 +119,50 @@ DMG 内已附带 `macbattery-helper` 二进制与 `install_helper.sh`，解压�
 
 ---
 
+## 数据持久化
+
+数据以 CSV 异步持久化（不阻塞界面）：
+
+- 功率 / 电量日志：`~/Library/Application Support/MacBattery/power_log.csv`
+- 电池健康日志：`~/Library/Application Support/MacBattery/battery_health_log.csv`（按「值变化」或「距上次记录超 6 小时」任一触发落盘）
+
+---
+
 ## 结构
 
 ```
-Sources/MacBattery/
-├── main.swift          # 入口
-├── FloatingPanel.swift # 置顶透明穿透浮窗 + 位置
-├── PowerHUDView.swift  # 圆环电量 + 两行功率 UI
-├── PowerMonitor.swift  # 每秒刷新数据
-├── Updater.swift       # 在线自动更新（GitHub Releases + DMG 下载）
-├── Battery.swift       # 电量 + 充电功率（IOKit 官方 API）
-└── SMC.swift           # AppleSMC 整机功率读取
+Sources/
+├── MacBattery/
+│   ├── main.swift                  # 入口
+│   ├── AppSettings.swift           # 设置项持久化
+│   ├── FloatingPanel.swift         # 置顶透明穿透浮窗 + 位置
+│   ├── PowerHUDView.swift          # 电量圆环 + CPU/RAM 半环 + 两行功率 UI
+│   ├── PowerMonitor.swift          # 后台采样 + 结果发布（SMC/IOKit 不阻塞 UI）
+│   ├── PowerLogger.swift           # 功率 / 电量 CSV 异步持久化
+│   ├── PowerChartView.swift        # 历史功率图表
+│   ├── PowerChartPanelController.swift
+│   ├── Battery.swift               # 电量 + 充电功率 + 电压电流（IOKit 官方 API）
+│   ├── BatteryHealthLogger.swift   # 电池健康采样与 CSV 落盘
+│   ├── BatteryHealthChartView.swift# 电池健康图表
+│   ├── BatteryHealthPanelController.swift
+│   ├── SettingsView.swift          # 设置面板
+│   ├── Updater.swift               # 在线自动更新（GitHub Releases + DMG 下载）
+│   ├── SMC.swift                   # AppleSMC 整机功率读取
+│   └── SystemPower.swift           # 整机功率数据源（含估算 / 真实 helper 值）
+├── MacBatteryHelper/
+│   └── main.swift                  # root helper 守护（真实整机功率）
+└── SMCBridge/
+    ├── SMC.c                       # AppleSMC 底层 C 读取
+    └── include/SMC.h
+Scripts/
+├── install_helper.sh               # 安装 root helper
+└── make_icon.py                    # 生成应用图标
+Resources/
+└── AppIcon.icns                    # 应用图标
 ```
 
 ## 调整项
 
 - **位置**：改 `FloatingPanel.swift` 中 `placePanel` 的 `margin` 与起点坐标。
 - **尺寸/配色**：改 `PowerHUDView.swift` 的 `frame`、圆环线宽、`ringColor` 阈值。
-- **刷新间隔**：改 `PowerMonitor.swift` 中 `Timer` 的 `1.0` 秒。
+- **刷新间隔**：改 `PowerMonitor.swift` 中采样节奏（含后台 timer）。
