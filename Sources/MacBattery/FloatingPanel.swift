@@ -13,8 +13,8 @@ final class FloatingPanelController: NSWindowController {
     private var moveObserver: NSObjectProtocol?
 
     /// 挂件在 scale=1 时的基础宽高（与 PowerHUDView 保持一致）。
-    private let baseWidth: CGFloat = 296
-    private let baseHeight: CGFloat = 96
+    private let baseWidth: CGFloat = 208
+    private let baseHeight: CGFloat = 64
 
     init() {
         settings = SettingsStore()
