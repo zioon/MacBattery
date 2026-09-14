@@ -8,8 +8,8 @@ import AppKit
 /// - 如需退出，在终端 Ctrl+C。
 let app = NSApplication.shared
 
-private final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var windowController: FloatingPanelController?
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    fileprivate var windowController: FloatingPanelController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 隐藏 Dock 图标（纯浮窗工具）。

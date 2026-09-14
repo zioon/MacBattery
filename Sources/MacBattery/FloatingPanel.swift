@@ -28,7 +28,8 @@ final class FloatingPanelController: NSWindowController {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     deinit {
-        monitor.stop()
+        // deinit 是非隔离上下文，需切到主线程再停掉定时器。
+        Task { @MainActor [weak self] in self?.monitor.stop() }
     }
 
     /// 把面板放到屏幕右上角，横向与屏幕边缘留出固定间距。
@@ -48,11 +49,11 @@ final class FloatingPanelController: NSWindowController {
 /// 简单的 置顶 + 穿透 面板。
 final class FloatingPanel: NSPanel {
 
-    init(contentRect: NSRect, styleMask: NSWindow.StyleMask, backing: NSWindow.BackingStoreType, defer: Bool) {
+    override init(contentRect: NSRect, styleMask: NSWindow.StyleMask, backing: NSWindow.BackingStoreType, defer deferred: Bool) {
         super.init(contentRect: contentRect,
                    styleMask: styleMask,
                    backing: backing,
-                   defer: defer)
+                   defer: deferred)
 
         // 置顶于所有窗口之上，含全屏 / 所有桌面空间。
         level = .floating

@@ -41,7 +41,7 @@ private class SMCClient {
     private static let kSMCHandleYPCEvent: UInt32 = 2
     private static let kSMCGetKeyInfo: UInt8 = 9
     private static let kSMCReadKey: UInt8 = 5
-    private static let kSMCKeyNotFound: UInt32 = 0x84  // 键不存在
+    private static let kSMCKeyNotFound: UInt8 = 0x84  // 键不存在
 
     private var connection: io_connect_t = 0
 
@@ -49,10 +49,9 @@ private class SMCClient {
         let service = IOServiceGetMatchingService(kIOMainPortDefault,
                                                   IOServiceMatching("AppleSMC"))
         guard service != 0 else { throw SMCError.serviceNotFound }
-        defer { IOObjectRelease(service) }
-
         var conn: io_connect_t = 0
         let kr = IOServiceOpen(service, mach_task_self_, 0, &conn)
+        IOObjectRelease(service)
         guard kr == KERN_SUCCESS else { throw SMCError.openFailed }
         connection = conn
     }
@@ -73,22 +72,28 @@ private class SMCClient {
     /// 发送一次 SMC 调用封装（80 字节 SMCParamStruct）。
     private func call(_ input: inout SMCParamStruct) throws -> SMCParamStruct {
         var output = SMCParamStruct()
-        let kr = IOConnectCallStructMethod(
-            connection,
-            UInt32(SMCClient.kSMCHandleYPCEvent),
-            &input,
-            MemoryLayout<SMCParamStruct>.size,
-            &output,
-            MemoryLayout<SMCParamStruct>.size
-        )
+        let size = MemoryLayout<SMCParamStruct>.size
+        var outCnt = size
+
+        let kr: kern_return_t = withUnsafePointer(to: &input) { inPtr in
+            withUnsafeMutablePointer(to: &output) { outPtr in
+                let rawIn = UnsafeRawPointer(inPtr).assumingMemoryBound(to: Int.self)
+                let rawOut = UnsafeMutableRawPointer(outPtr).assumingMemoryBound(to: Int.self)
+                return IOConnectCallStructMethod(connection,
+                                                 SMCClient.kSMCHandleYPCEvent,
+                                                 rawIn,
+                                                 size,
+                                                 rawOut,
+                                                 &outCnt)
+            }
+        }
         guard kr == KERN_SUCCESS else { throw SMCError.openFailed }
         return output
     }
 
     /// 按 4 字符键名读取原始数据。
     private func readKey(_ key: String) throws -> [UInt8] {
-        let fourCC = fourCharCode(key)
-        return try readKey(fourCC)
+        try readKey(fourCharCode(key))
     }
 
     private func readKey(_ key: FourCharCode) throws -> [UInt8] {
@@ -103,17 +108,16 @@ private class SMCClient {
         var readStruct = SMCParamStruct()
         readStruct.data8 = SMCClient.kSMCReadKey
         readStruct.key = key
-        readStruct.dataSize = info.dataSize
+        readStruct.keyInfo.dataSize = info.keyInfo.dataSize
 
         let output = try call(&readStruct)
         guard output.result == 0 else { throw SMCError.serviceNotFound }
-        return Array(output.bytes.prefix(Int(output.dataSize)))
+        return Array(output.bytes.prefix(Int(output.keyInfo.dataSize)))
     }
 
     private func fourCharCode(_ string: String) -> FourCharCode {
-        let chars = Array(string.utf8).prefix(4)
         var code: FourCharCode = 0
-        for c in chars {
+        for c in string.utf8.prefix(4) {
             code = (code << 8) | FourCharCode(c)
         }
         return code
@@ -134,7 +138,7 @@ private struct SMCParamStruct {
     var bytes = [UInt8](repeating: 0, count: 32)
 }
 
-// 下面三个结构体拼成 SMCParamStruct 的标准 80 字节布局。
+// 下面三个结构体拼成 SMCParamStruct 的标准布局。
 struct SMCVersion {
     var major: UInt8 = 0
     var minor: UInt8 = 0
