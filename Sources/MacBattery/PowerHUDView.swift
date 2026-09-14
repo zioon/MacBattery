@@ -3,7 +3,7 @@ import SwiftUI
 /// 置顶挂件 UI：外层矩形充电环（完整底环 + 电量进度）环绕中间两行功率；
 /// 内层一个整体的内环承接 CPU / RAM，上半环为 CPU、下半环为 RAM，各按占用率填充；
 /// 内环外壁与充电环内壁完全重合（几何上严丝合缝）。
-/// 充电环随电量平滑变色；充电时叠加呼吸光晕、流动高光与闪电脉冲等特效。
+/// 充电环随电量平滑变色；充电时沿环流动高光，且充电图标周期性发光（环本身不晃动）。
 /// 整体尺寸随 `scale` 缩放（基础宽高会随 scale 变化）。
 struct PowerHUDView: View {
 
@@ -11,7 +11,7 @@ struct PowerHUDView: View {
     /// 缩放系数（0.8 / 1.0 / 1.3…）
     var scale: CGFloat = 1.0
 
-    /// 充电特效的呼吸相位（仅充电时往复动画）。
+    /// 充电图标发光脉动相位（仅充电时往复动画）。
     @State private var breathing = false
 
     /// 可见底盘边长（scale=1 时为 58×58）。
@@ -55,23 +55,13 @@ struct PowerHUDView: View {
             RoundedRectangle(cornerRadius: ringCorner)
                 .fill(Color.black.opacity(0.32))
 
-            // 充电环：底环 + 光晕 + 进度 + 流动高光。
+            // 充电环：底环 + 进度 + 流动高光。
             // 整体内缩半个线宽，避免描边一半被面板边缘裁切（否则环会显得断裂）。
             ZStack {
                 RoundedRectangle(cornerRadius: ringStrokeRadius)
                     .stroke(Color.white.opacity(0.28), lineWidth: ringWidth)
 
-                // 充电时的呼吸光晕：进度弧的模糊副本
-                if isCharging {
-                    RoundedRectangle(cornerRadius: ringStrokeRadius)
-                        .trim(from: 0, to: progress)
-                        .stroke(levelColor,
-                                style: StrokeStyle(lineWidth: ringWidth, lineCap: .round))
-                        .blur(radius: 2 * scale)
-                        .opacity(breathing ? 0.6 : 0.22)
-                }
-
-                // 电量进度（随电量变色 + 充电时外发光）
+                // 电量进度（随电量变色；充电时为静态外发光，环本身不做呼吸晃动）
                 RoundedRectangle(cornerRadius: ringStrokeRadius)
                     .trim(from: 0, to: progress)
                     .stroke(
@@ -79,10 +69,10 @@ struct PowerHUDView: View {
                                        startPoint: .top, endPoint: .bottom),
                         style: StrokeStyle(lineWidth: ringWidth, lineCap: .round)
                     )
-                    .shadow(color: isCharging ? levelColor.opacity(0.9) : .clear,
-                            radius: breathing ? 2 * scale : 0.8 * scale)
+                    .shadow(color: isCharging ? levelColor.opacity(0.9) : Color.clear,
+                            radius: 1.5 * scale)
 
-                // 充电时沿环流动的高光段
+                // 充电时沿环流动的高光
                 if isCharging {
                     ChargingSweep(radius: ringStrokeRadius,
                                   lineWidth: ringWidth,
@@ -127,8 +117,11 @@ struct PowerHUDView: View {
                     Image(systemName: isCharging ? "bolt.fill" : "bolt.badge.clock")
                         .font(.system(size: 6.5 * scale, weight: .bold))
                         .foregroundColor(isCharging ? .yellow : .white.opacity(0.5))
-                        .shadow(color: isCharging ? Color.yellow.opacity(0.7) : .clear,
-                                radius: breathing ? 1.5 * scale : 0.4 * scale)
+                        // 充电时图标周期性发光：只让图标亮暗脉动，充电环保持静止不晃动
+                        .shadow(color: isCharging
+                                    ? Color.yellow.opacity(breathing ? 1.0 : 0.25)
+                                    : Color.clear,
+                                radius: (breathing ? 3.0 : 0.6) * scale)
                     Text(chargeValueText)
                         .font(.system(size: 8.5 * scale, weight: .semibold, design: .rounded))
                         .foregroundColor(.white.opacity(0.9))
@@ -149,10 +142,10 @@ struct PowerHUDView: View {
         .onChange(of: isCharging) { _ in updateEffects() }
     }
 
-    /// 仅在充电时开启呼吸动画，避免不充电时空跑动画徒增功耗。
+    /// 仅在充电时开启发光脉动（只驱动充电图标），不充电时不跑动画，避免空转徒增功耗。
     private func updateEffects() {
         if isCharging {
-            withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) {
+            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
                 breathing = true
             }
         } else {
@@ -205,52 +198,46 @@ struct PowerHUDView: View {
     }
 }
 
-/// 充电时沿环流动的高光段。
-/// 用 TimelineView 由时钟直接求值（不经过 SwiftUI 隐式动画），
-/// 并用「绕回双段」画法保证高光长度始终恒定，不会越流越长。
+/// 充电时沿环流动的高光。
+///
+/// 直接用「充电环自身的描边 + 角向渐变（AngularGradient）」来画，而不是另画一段弧：
+/// 高光就是环的描边本身，因此必然与环严丝合缝地重合；
+/// 且角向渐变天然首尾相接，不存在路径闭合点，也就不会出现闭合点处错位 / 长度变化的问题。
 private struct ChargingSweep: View {
     var radius: CGFloat
     var lineWidth: CGFloat
     var scale: CGFloat
 
-    /// 高光段占整环的比例（固定不变）。
-    private let tail: CGFloat = 0.18
     /// 绕行一圈的时长（秒）。
     private let period: Double = 1.6
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1.0 / 30.0)) { context in
-            arc(head: head(at: context.date))
+            let sweep = sweepAngle(at: context.date)
+            RoundedRectangle(cornerRadius: radius)
+                .stroke(
+                    AngularGradient(
+                        gradient: Gradient(stops: [
+                            .init(color: .white.opacity(0), location: 0.00),
+                            .init(color: .white.opacity(0), location: 0.42),
+                            .init(color: .white.opacity(0.85), location: 0.50),
+                            .init(color: .white.opacity(0), location: 0.58),
+                            .init(color: .white.opacity(0), location: 1.00)
+                        ]),
+                        center: .center,
+                        startAngle: .degrees(sweep - 180),
+                        endAngle: .degrees(sweep + 180)
+                    ),
+                    lineWidth: lineWidth
+                )
+                .blur(radius: 0.6 * scale)
         }
     }
 
-    /// 当前高光头端在环上的位置（0…1）。
-    private func head(at date: Date) -> CGFloat {
+    /// 当前高光所在的角向位置（度），由时钟直接求值，不经过 SwiftUI 隐式动画。
+    private func sweepAngle(at date: Date) -> Double {
         let t = date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: period)
-        return CGFloat(t / period)
-    }
-
-    /// head 越过起点时，把这一段拆成「绕回」的两截，长度之和恒等于 tail。
-    @ViewBuilder
-    private func arc(head: CGFloat) -> some View {
-        let start = head - tail
-        if start >= 0 {
-            segment(from: start, to: head)
-        } else {
-            segment(from: 0, to: head)
-            segment(from: 1 + start, to: 1)
-        }
-    }
-
-    private func segment(from: CGFloat, to: CGFloat) -> some View {
-        // 用 butt（平头）线帽：绕回双段会跨过环形路径的闭合点（起点），
-        // 若用 round 圆帽会在闭合点叠加出一坨、与充电环脱轨；
-        // 平头使两段在闭合点处平齐相接，高光全程贴合环轨且长度恒定。
-        RoundedRectangle(cornerRadius: radius)
-            .trim(from: from, to: to)
-            .stroke(Color.white.opacity(0.85),
-                    style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt))
-            .blur(radius: 0.8 * scale)
+        return t / period * 360
     }
 }
 
