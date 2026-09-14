@@ -8,7 +8,8 @@ final class PowerChartPanelController: NSWindowController {
     /// 电池健康日志（一并注入，供图表后续展示健康数据时使用）。
     private let healthLogger: BatteryHealthLogger
 
-    override init(window: NSWindow?, healthLogger: BatteryHealthLogger) {
+    /// 自定义便捷初始化（携带健康日志），非重写父类方法，无需 override。
+    init(window: NSWindow?, healthLogger: BatteryHealthLogger) {
         self.healthLogger = healthLogger
         super.init(window: window)
     }

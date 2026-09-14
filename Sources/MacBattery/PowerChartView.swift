@@ -193,7 +193,7 @@ struct PowerChartView: View {
         let targetE = startE + Double(hx - plot.minX) / plot.plotW * timeRange
         guard let s = nearestSample(upTo: targetE, in: samples) else { return nil }
         let x = plot.minX + CGFloat((s.t.timeIntervalSince1970 - startE) / timeRange) * plot.plotW
-        let rows = series.map { Row(color: $0.color, title: $0.title, value: fmtVal($0.dsp(s))) }
+        let rows = series.map { HoverInfo.Row(color: $0.color, title: $0.title, value: fmtVal($0.dsp(s))) }
         return HoverInfo(x: x, date: s.t, rows: rows)
     }
 
