@@ -45,11 +45,10 @@ enum SystemPower {
     private static func loadCpuTicks() -> CpuTicks? {
         var info = host_cpu_load_info()
         var count = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info>.size / MemoryLayout<integer_t>.size)
-        let kr = withUnsafeMutablePointer(to: &info) { p in
-            host_statistics(mach_host_self(),
-                            HOST_CPU_LOAD_INFO,
-                            UnsafeMutablePointer(p),
-                            &count)
+        let kr = withUnsafeMutablePointer(to: &info) { ptr in
+            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPtr in
+                host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, intPtr, &count)
+            }
         }
         guard kr == KERN_SUCCESS else { return nil }
         return CpuTicks(user: Double(info.cpu_ticks.0),

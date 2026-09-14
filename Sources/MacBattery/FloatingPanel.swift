@@ -53,7 +53,7 @@ final class FloatingPanelController: NSWindowController {
     private func applySettings() {
         guard let panel = window as? NSPanel else { return }
 
-        let scale = SizePreset(rawValue: settings.sizeRaw).scale
+        let scale = (SizePreset(rawValue: settings.sizeRaw) ?? .medium).scale
         let side = baseSide * scale
 
         let hosting = NSHostingView(rootView: PowerHUDView(monitor: monitor, scale: scale))

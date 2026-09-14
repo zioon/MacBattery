@@ -27,6 +27,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-let delegate = AppDelegate()
-app.delegate = delegate
-app.run()
+// 顶层代码默认在非隔离上下文；AppDelegate 是 @MainActor，
+// 因此在 main 里显式断言主线程，再创建并运行应用。
+MainActor.assumeIsolated {
+    let delegate = AppDelegate()
+    app.delegate = delegate
+    app.run()
+}
