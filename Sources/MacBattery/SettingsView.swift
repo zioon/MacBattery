@@ -35,11 +35,11 @@ struct SettingsView: View {
                     Text("\(Int(store.tdpWatts)) W")
                         .foregroundColor(.secondary)
                 }
-                Slider(value: $store.tdpWatts, in: 25...150, step: 5)
-                Text("整机功率的估算基准；若硬件 SMC 可读则直接用真实值。")
+                Slider(value: $store.tdpWatts, in: 20...180, step: 5)
+                Text("整机功率在 Intel 机型上 macOS 不提供实测值，这里按机型最大功耗估算。")
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                Text("提示：若整机功率偏低，可调高此值。")
+                Text("把它调到接近你机型的额定功耗（如轻薄本 28W、标压 U 45W、H 系 60W+），整机功率会更贴近真实。")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }

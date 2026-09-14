@@ -6,13 +6,18 @@ import Darwin
 enum SystemPower {
 
     /// 整机功率（瓦特）。
+    /// 优先 SMC 真实读数（Apple Silicon 的 PSTR 等；Intel 通常不可用）；
+    /// 读不到时按「CPU 功耗曲线 + 平台基础功耗」估算，TDP 可取设置里的机型最大功耗。
     static func watts(tdp: Double) -> Double {
         let real = SMCReader.systemWatts()
         if real > 0 { return real }
-        let usage = cpuUsage()
-        let idleBase = 6.0        // 屏幕 / 基本外设等基础功耗的粗略估计
-        let estimate = idleBase + usage * tdp
-        return max(0.5, estimate)
+
+        let u = max(0, min(1, cpuUsage()))
+        // CPU 功耗大致曲线：低负载仍有基础，随使用率抬升逼近 TDP
+        let cpuPower = tdp * (0.05 + 0.95 * u)
+        // 平台基础功耗：屏幕 / 内存 / 固态 / 无线等，随负载轻微上升
+        let platformPower = 7 + 3 * u
+        return cpuPower + platformPower
     }
 
     /// 当前 CPU 平均使用率（0...1）。用两次调用之间的 tick 增量计算，
