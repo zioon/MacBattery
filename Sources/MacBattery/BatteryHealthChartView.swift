@@ -22,11 +22,17 @@ struct BatteryHealthChartView: View {
     @State private var yMin: [Double] = [0, 0, 50, 0]
     @State private var yMax: [Double] = [10_000, 10_000, 100, 500]
 
+    /// 鼠标在图表内的悬停位置（相对画布全尺寸，y 向下，nil 表示已离开）。
+    @State private var hoverPoint: CGPoint?
+
     @GestureState private var dragBase: DragBase?
     private struct DragBase { let endTime: Date }
 
     private var minView: TimeInterval { 10 * 60 }
     private var maxView: TimeInterval { 365 * 86400 }
+
+    /// 快捷时间范围预设（秒）：1 天 / 1 周 / 1 月 / 1 季 / 1 年。
+    static let windowPresets: [TimeInterval] = [86400, 7 * 86400, 30 * 86400, 90 * 86400, 365 * 86400]
 
     // MARK: 指标定义
 
@@ -65,6 +71,7 @@ struct BatteryHealthChartView: View {
     var body: some View {
         VStack(spacing: 6) {
             header
+            presetBar
             chartArea
         }
         .padding(.top, 8)
@@ -78,7 +85,7 @@ struct BatteryHealthChartView: View {
         }
     }
 
-    // MARK: - 头部（指标当前值 + 控件）
+    // MARK: - 头部（指标当前值）
 
     private var header: some View {
         HStack(spacing: 10) {
@@ -89,13 +96,49 @@ struct BatteryHealthChartView: View {
                 legendChip(m)
             }
             Spacer()
-            Text("时间轴按天合计")
-                .font(.caption2)
-                .foregroundColor(.secondary)
-            Button("适合窗口") { fitToAll() }
-                .font(.caption)
         }
         .font(.caption)
+    }
+
+    // MARK: - 时间范围快捷切换（参考历史图表）
+
+    private var presetBar: some View {
+        HStack(spacing: 10) {
+            windowPresetButton("1d", Self.windowPresets[0])
+            windowPresetButton("1w", Self.windowPresets[1])
+            windowPresetButton("1m", Self.windowPresets[2])
+            windowPresetButton("1q", Self.windowPresets[3])
+            windowPresetButton("1y", Self.windowPresets[4])
+            Button("全部") { fitToAll() }
+                .buttonStyle(.plain)
+                .font(.caption)
+            Spacer()
+            Text("健康数据变化慢，建议放大时间窗查看趋势")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    /// 当前命中的时间范围预设（未命中则返回 nil，视为「全部」选中）。
+    private var activeWindowPreset: TimeInterval? {
+        Self.windowPresets.first { $0 == timeRange }
+    }
+
+    /// 时间范围按钮。
+    private func windowPresetButton(_ title: String, _ seconds: TimeInterval) -> some View {
+        let active = activeWindowPreset == seconds
+        return Button(title) { setWindow(seconds) }
+            .buttonStyle(.plain)
+            .font(.caption.weight(active ? .semibold : .regular))
+            .foregroundColor(active ? Color.accentColor : .primary)
+    }
+
+    /// 切换到指定时间范围：回到实时跟随、右缘贴住最新样本并复位 y 轴自适应。
+    private func setWindow(_ seconds: TimeInterval) {
+        timeRange = min(max(seconds, minView), maxView)
+        followLive = true
+        if let t = healthLogger.samples.last?.t { endTime = t }
+        autoY = true
     }
 
     private func legendChip(_ m: HealthMetric) -> some View {
@@ -121,15 +164,18 @@ struct BatteryHealthChartView: View {
         GeometryReader { geo in
             let plot = HealthPlot(outer: geo.size, left: 80, right: 10, top: 8, bottom: 18, rows: Self.metrics.count)
             let draw = buildDraw(plot)
+            let hover = healthHoverInfo(hoverX: hoverPoint?.x, plot: plot)
 
             ZStack {
-                Canvas { ctx, _ in draw.render(context: ctx) }
+                Canvas { ctx, _ in draw.render(context: ctx, hover: hover) }
                     .background(Color.black.opacity(0.03))
 
-                // 滚轮：横向平移 / 纵向缩放时间窗 / Option 缩放 y 轴。
+                // 滚轮：横向平移 / 纵向缩放时间窗 / Option 缩放 y 轴；悬停定位。
                 ScrollWheelCatcher { dx, dy, option in
                     handleScroll(dx: dx, dy: dy, option: option, plot: plot)
-                } onHover: { _ in }
+                } onHover: { point in
+                    hoverPoint = point
+                }
 
                 // 拖拽平移。
                 Color.clear
@@ -201,6 +247,33 @@ struct BatteryHealthChartView: View {
         var a = lo - pad, b = hi + pad
         if b - a < 2 { let m = (a + b) / 2; a = m - 1; b = m + 1 }
         return max(0, a)...b
+    }
+
+    // MARK: - 悬停
+
+    /// 由鼠标 x 坐标定位最近的健康样本，生成跨 4 行数值浮层所需数据。
+    private func healthHoverInfo(hoverX: CGFloat?, plot: HealthPlot) -> HealthHoverInfo? {
+        guard let hx = hoverX, hx >= plot.minX, hx <= plot.maxX else { return nil }
+        let startE = endTime.timeIntervalSince1970 - timeRange
+        let targetE = startE + Double(hx - plot.minX) / plot.plotW * timeRange
+        guard let s = nearestSample(upTo: targetE, in: healthLogger.samples) else { return nil }
+        let x = plot.minX + (s.t.timeIntervalSince1970 - startE) / timeRange * plot.plotW
+        let rows = Self.metrics.map { m in
+            HealthHoverInfo.Row(color: m.color, title: m.title, value: m.format(m.value(s)))
+        }
+        return HealthHoverInfo(x: x, date: s.t, rows: rows)
+    }
+
+    /// 序列中时间不超过 target 的最近一条（健康样本按时间升序）。
+    private func nearestSample(upTo target: Double, in arr: [BatteryHealthSample]) -> BatteryHealthSample? {
+        guard !arr.isEmpty else { return nil }
+        var lo = 0, hi = arr.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if arr[mid].t.timeIntervalSince1970 <= target { lo = mid + 1 } else { hi = mid }
+        }
+        let idx = lo - 1
+        return idx >= 0 ? arr[idx] : nil
     }
 
     // MARK: - 交互
@@ -281,6 +354,20 @@ struct BatteryHealthChartView: View {
     }
 }
 
+// MARK: - 悬停浮层数据
+
+private struct HealthHoverInfo {
+    let x: Double
+    let date: Date
+    let rows: [Row]
+
+    struct Row {
+        let color: Color
+        let title: String
+        let value: String
+    }
+}
+
 // MARK: - 绘图区域
 
 private struct HealthPlot {
@@ -311,7 +398,7 @@ private struct HealthDraw {
 
     private var span: Double { max(1e-9, endE - startE) }
 
-    func render(context: GraphicsContext) {
+    func render(context: GraphicsContext, hover: HealthHoverInfo?) {
         var clip = Path()
         clip.addRect(CGRect(x: plot.minX, y: plot.top, width: plot.plotW, height: plot.plotH))
         context.drawLayer { layer in
@@ -345,21 +432,14 @@ private struct HealthDraw {
             }
         }
 
-        // 行标题 + y 刻度标签（不裁剪）
+        // 行标题（不裁剪，左边缘靠上；取消 y 轴上下数据标记）
         for i in metrics.indices {
-            let range = yRanges[i]
             let yTop = plot.rowY(i)
-            let yBot = plot.rowBottom(i)
             let m = metrics[i]
             // 行标题（左边缘，靠上）
             let title = Text(m.title).font(.system(size: 9, weight: .semibold))
                 .foregroundColor(m.color)
             context.draw(title, at: CGPoint(x: plot.minX - 6, y: yTop + 1), anchor: .topTrailing)
-            // 上 / 下 y 值标签
-            let hiText = Text(m.format(range.upperBound)).font(.system(size: 8)).foregroundColor(.gray)
-            context.draw(hiText, at: CGPoint(x: plot.minX - 6, y: yTop - 2), anchor: .bottomTrailing)
-            let loText = Text(m.format(range.lowerBound)).font(.system(size: 8)).foregroundColor(.gray)
-            context.draw(loText, at: CGPoint(x: plot.minX - 6, y: yBot - 2), anchor: .topTrailing)
         }
         // 底部共享时间轴
         let formatter = Self.xFormatter(for: metrics.count > 0 ? self.span : 30 * 86400)
@@ -376,6 +456,47 @@ private struct HealthDraw {
             let text = Text("暂无健康数据（应用运行后会随采样累积）")
                 .font(.system(size: 10)).foregroundColor(.gray)
             context.draw(text, at: CGPoint(x: plot.minX + plot.plotW / 2, y: plot.top + plot.plotH / 2))
+        }
+
+        // 悬停：跨 4 行的竖线 + 该时刻数值浮层。
+        if let hover {
+            drawHover(hover, in: context)
+        }
+    }
+
+    /// 绘制悬停竖线（跨整个图表区）+ 时间与 4 项指标数值浮层。
+    private func drawHover(_ hover: HealthHoverInfo, in ctx: GraphicsContext) {
+        let x = CGFloat(hover.x)
+        guard x >= plot.minX, x <= plot.maxX else { return }
+
+        // 竖线跨全部 4 行。
+        var vp = Path()
+        vp.move(to: CGPoint(x: x, y: plot.top))
+        vp.addLine(to: CGPoint(x: x, y: plot.top + plot.plotH))
+        ctx.stroke(vp, with: .color(.white.opacity(0.5)), lineWidth: 1)
+
+        // 浮层放竖线偏向空白一侧。
+        let goRight = x < plot.minX + plot.plotW / 2
+        let anchor: UnitPoint = goRight ? .leading : .trailing
+        let bx = goRight ? x + 10 : x - 10
+
+        let formatter = DateFormatter()
+        let span = endE - startE
+        if span >= 86400 { formatter.dateFormat = "MM-dd HH:mm" }
+        else if span >= 3600 { formatter.dateFormat = "HH:mm" }
+        else { formatter.dateFormat = "HH:mm:ss" }
+        let timeText = Text(formatter.string(from: hover.date))
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundColor(.white)
+        ctx.draw(timeText, at: CGPoint(x: bx, y: plot.top + 8), anchor: anchor)
+
+        var yy = plot.top + 26
+        for row in hover.rows {
+            let line = Text("\(row.title)  \(row.value)")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(row.color)
+            ctx.draw(line, at: CGPoint(x: bx, y: yy), anchor: anchor)
+            yy += 15
         }
     }
 

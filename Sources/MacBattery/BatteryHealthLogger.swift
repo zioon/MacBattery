@@ -49,8 +49,9 @@ final class BatteryHealthLogger: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: Self.sampleInterval, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.sample() }
         }
-        // 启动即采样一次，尽快记录当前健康值。
-        sample()
+        // 启动即强制采样一次：无论健康值是否变化都留档一条基线，
+        // 使多次运行也能积累时间上分散的历史点（健康值长期不变时默认策略会一直跳过）。
+        sample(force: true)
     }
 
     func stop() {
@@ -58,15 +59,17 @@ final class BatteryHealthLogger: ObservableObject {
         timer = nil
     }
 
-    /// 立即采样一次并落盘（供打开健康窗口等时机调用），确保当前值马上可见。
+    /// 立即采样一次并强制落盘（供打开健康窗口等时机调用），保证每次打开都留档、曲线始终可见。
     func recordNow() {
-        sample()
+        sample(force: true)
     }
 
     // MARK: - 采样
 
-    /// 读取一次电池健康值；任一字段相对上一条有变化，或距上一条已超过基线间隔时追加并落盘。
-    private func sample() {
+    /// 读取一次电池健康值并决定是否落盘。
+    /// - force：为 true 时无条件记录本次（用于启动 / 打开窗口等观感至关重要的时机）。
+    /// - 否则仅当任一字段相对上一条有变化，或距上一条已超过基线间隔时才记录。
+    private func sample(force: Bool = false) {
         guard let health = BatteryReader.health() else { return }
         let now = BatteryHealthSample(
             t: Date(),
@@ -75,7 +78,7 @@ final class BatteryHealthLogger: ObservableObject {
             healthPercent: health.healthPercent,
             cycleCount: health.cycleCount
         )
-        if let last = lastRecorded {
+        if !force, let last = lastRecorded {
             // 1) 健康值发生任何变化 → 必须记录；
             // 2) 距上次记录已超过基线间隔 → 即使未变化也强制留档，历史不空洞。
             let changed = last.maxCapacity != now.maxCapacity
