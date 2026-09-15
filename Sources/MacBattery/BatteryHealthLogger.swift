@@ -121,13 +121,31 @@ final class BatteryHealthLogger: ObservableObject {
         store.readRecent(limit: Self.historyBackfill) { [weak self] history in
             Task { @MainActor [weak self] in
                 guard let self, self.generation == gen else { return }
-                // 回填完成前若已有新采样写入缓冲，则保留内存中的最新数据、不覆盖，
-                // 避免异步回填把启动瞬间采到的点冲掉导致图表空白。
-                guard self.samples.isEmpty else { return }
-                self.samples = history
-                self.lastRecorded = history.last
+                let merged = self.merge(history: history, new: self.samples)
+                guard merged != self.samples else { return }
+                self.samples = merged
+                self.lastRecorded = self.samples.last
             }
         }
+    }
+
+    /// 把磁盘历史与内存中的新采样按时间升序合并、去重，并裁剪到内存容量上限。
+    /// 启动时 `sample(force: true)` 会同步先写入内存新点，因此回填不能因缓冲非空而丢弃
+    /// 磁盘历史，否则每次启动都只有启动瞬间那 1 个点、健康曲线永远空白。
+    private func merge(history: [BatteryHealthSample], new: [BatteryHealthSample]) -> [BatteryHealthSample] {
+        let pooled = (history + new).sorted { $0.t < $1.t }
+        var deduped: [BatteryHealthSample] = []
+        for s in pooled {
+            if let last = deduped.last, last.t == s.t {
+                deduped[deduped.count - 1] = s
+            } else {
+                deduped.append(s)
+            }
+        }
+        if deduped.count > Self.memoryCapacity {
+            deduped.removeFirst(deduped.count - Self.memoryCapacity)
+        }
+        return deduped
     }
 }
 
