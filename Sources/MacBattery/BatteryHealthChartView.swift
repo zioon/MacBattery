@@ -476,18 +476,18 @@ private struct HealthDraw {
             grid(f: [0.0, 0.5, 1.0], yTop: plot.topY, height: plot.topH, in: layer)
             // 上图：容量折线 × 2（设计容量 + 当前最大容量，共左轴）
             for m in capacityMetrics {
-                stroke(pts: points(v: { m.value($0) }, range: capRange,
-                                   yTop: plot.topY, yBot: plot.topBottom),
+                stroke(points(v: { m.value($0) }, range: capRange,
+                             yTop: plot.topY, yBot: plot.topBottom),
                        color: m.color, in: layer)
             }
             // 上图：健康度折线（右轴副坐标）
-            stroke(pts: points(v: { healthMetric.value($0) }, range: healthRange,
-                               yTop: plot.topY, yBot: plot.topBottom),
+            stroke(points(v: { healthMetric.value($0) }, range: healthRange,
+                          yTop: plot.topY, yBot: plot.topBottom),
                    color: healthMetric.color, in: layer)
             // 下图：循环次数网格 + 折线
             grid(f: [0.0, 0.5, 1.0], yTop: plot.bottomY, height: plot.bottomH, in: layer)
-            stroke(pts: points(v: { cycleMetric.value($0) }, range: cycleRange,
-                               yTop: plot.bottomY, yBot: plot.bottomBottom),
+            stroke(points(v: { cycleMetric.value($0) }, range: cycleRange,
+                          yTop: plot.bottomY, yBot: plot.bottomBottom),
                    color: cycleMetric.color, in: layer)
             // 共享时间网格（纵向）
             for tick in timeTicks() {
