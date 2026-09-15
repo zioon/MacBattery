@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import os
 
 /// 电池健康信息的一个采样点（内存态）。
 struct BatteryHealthSample: Equatable {
@@ -37,6 +38,10 @@ final class BatteryHealthLogger: ObservableObject {
     /// 磁盘读写（所有 IO 方法均非隔离，可安全在后台调用）。
     private nonisolated let store = BatteryHealthLogStore()
 
+    /// 健康采样专用串行队列：IOKit 读取（BatteryReader.health / level）不占主线程，
+    /// 也不与 0.5s 的功率采样队列争抢。只在这里执行读取，结果回主线程应用。
+    private let readQueue = DispatchQueue(label: "MacBattery.health.read", qos: .utility)
+
     private var timer: Timer?
 
     /// 上一次成功写入的值；用于判断健康值是否发生变化。
@@ -56,6 +61,8 @@ final class BatteryHealthLogger: ObservableObject {
         }
         // 启动即强制采样一次：无论健康值是否变化都留档一条基线，
         // 使多次运行也能积累时间上分散的历史点（健康值长期不变时默认策略会一直跳过）。
+        // 注意：`sample()` 现在是异步的（硬件读取在 readQueue 上），
+        // 因此这个启动点与下面的磁盘回填的**到达顺序不再确定**，见 backfillHistory 的注释。
         sample(force: true)
     }
 
@@ -65,6 +72,8 @@ final class BatteryHealthLogger: ObservableObject {
     }
 
     /// 立即采样一次并强制落盘（供打开健康窗口等时机调用），保证每次打开都留档、曲线始终可见。
+    /// ⚠️ 取舍：硬件读取已移到 readQueue，本方法**不再同步完成** —— 打开健康窗口时
+    /// 采样会延迟约毫秒级才落盘。可接受的代价（换来主线程不再做 IOKit 读取）。
     func recordNow() {
         sample(force: true)
     }
@@ -80,18 +89,35 @@ final class BatteryHealthLogger: ObservableObject {
 
     // MARK: - 采样
 
-    /// 读取一次电池健康值并决定是否落盘。
+    /// 触发一次健康采样：硬件读取（IOKit）在 `readQueue` 上执行，只把"应用结果"留在主线程。
     /// - force：为 true 时无条件记录本次（用于启动 / 打开窗口等观感至关重要的时机）。
     /// - 否则仅当任一字段相对上一条有变化，或距上一条已超过基线间隔时才记录。
+    ///
+    /// 三个调用点（启动首拍 / 60s 定时器 / `recordNow()`）全在主线程，
+    /// 其中 60s 那条会长期、反复地与 0.5s 功率采样队列重叠，因此读取必须移出主线程。
     private func sample(force: Bool = false) {
-        guard let health = BatteryReader.health() else { return }
+        readQueue.async { [weak self] in
+            // 护栏断言：硬件读取不得在主线程（U-01 第 3 步）。
+            dispatchPrecondition(condition: .notOnQueue(.main))
+            guard let health = BatteryReader.health() else { return }
+            let level = BatteryReader.level()
+            Task { @MainActor [weak self] in
+                self?.applySample(health: health, level: level, force: force)
+            }
+        }
+    }
+
+    /// 在主线程应用一次健康采样结果：构造样本 → 判定是否落盘 → 追加。
+    /// `BatteryReader.BatteryHealth` 是纯值 struct（仅 Int / Double 字段），跨线程传递安全。
+    @MainActor
+    private func applySample(health: BatteryReader.BatteryHealth, level: Int, force: Bool) {
         let now = BatteryHealthSample(
             t: Date(),
             maxCapacity: health.maxCapacity,
             designCapacity: health.designCapacity,
             healthPercent: health.healthPercent,
             cycleCount: health.cycleCount,
-            levelPercent: BatteryReader.level()
+            levelPercent: level
         )
         if !force, let last = lastRecorded {
             // 1) 健康值发生任何变化 → 必须记录；
@@ -118,42 +144,45 @@ final class BatteryHealthLogger: ObservableObject {
     }
 
     /// 从磁盘回填历史，仅在缓冲为空时执行。
+    ///
+    /// **时序分析（U-01 第 2 步把采样改成异步后仍然成立）**：
+    /// `start()` 先调本方法、再调 `sample(force: true)`。改动前启动点是**同步**写进内存的，
+    /// 必定早于异步回填到达；改动后启动点要在 readQueue 上读一轮才回主线程追加，
+    /// 于是回填与启动点的到达顺序变得不确定。两种顺序都正确：
+    /// - 回填先到：`samples` 仍为空 → `mergedByTimestamp(history, [])` = 历史本身，赋值；
+    ///   随后 `append()` 把启动点追加到末尾（时间戳最新，仍保持升序）。
+    /// - 启动点先到：`samples == [启动点]` → 合并历史与该点，两者都在，按时间升序。
+    /// 这正是 v1.1.9 引入 merge 的原因（不能因缓冲非空而丢弃磁盘历史），
+    /// 现在该逻辑提升到共用的 `mergedByTimestamp`，对两种顺序一视同仁。
+    ///
+    /// 另外两处守卫不受时序影响：
+    /// - `guard samples.isEmpty` 是在**调用时同步**求值的（此刻还没有任何异步追加发生），
+    ///   所以改动后它依然为真、回填照常发起；
+    /// - `generation` 在调用时快照、在回调里比对，用于丢弃 reset 之前发出的回填，
+    ///   与到达顺序无关，仍然成立。
     private func backfillHistory() {
         guard samples.isEmpty else { return }
         let gen = generation
         store.readRecent(limit: Self.historyBackfill) { [weak self] history in
             Task { @MainActor [weak self] in
                 guard let self, self.generation == gen else { return }
-                let merged = self.merge(history: history, new: self.samples)
+                let merged = mergedByTimestamp(history: history,
+                                               new: self.samples,
+                                               timestamp: { $0.t },
+                                               capacity: Self.memoryCapacity)
                 guard merged != self.samples else { return }
                 self.samples = merged
                 self.lastRecorded = self.samples.last
             }
         }
     }
-
-    /// 把磁盘历史与内存中的新采样按时间升序合并、去重，并裁剪到内存容量上限。
-    /// 启动时 `sample(force: true)` 会同步先写入内存新点，因此回填不能因缓冲非空而丢弃
-    /// 磁盘历史，否则每次启动都只有启动瞬间那 1 个点、健康曲线永远空白。
-    private func merge(history: [BatteryHealthSample], new: [BatteryHealthSample]) -> [BatteryHealthSample] {
-        let pooled = (history + new).sorted { $0.t < $1.t }
-        var deduped: [BatteryHealthSample] = []
-        for s in pooled {
-            if let last = deduped.last, last.t == s.t {
-                deduped[deduped.count - 1] = s
-            } else {
-                deduped.append(s)
-            }
-        }
-        if deduped.count > Self.memoryCapacity {
-            deduped.removeFirst(deduped.count - Self.memoryCapacity)
-        }
-        return deduped
-    }
 }
 
 /// 非隔离的 CSV 持久化（在后台串行队列使用，全部 self-contained）。
 private final class BatteryHealthLogStore {
+
+    /// IO 失败此前全部被 `try?` 静默吞掉，历史丢失时无任何痕迹；改为记录到系统日志。
+    private static let logger = Logger(subsystem: "com.zioon.macbattery", category: "io")
 
     private let ioQueue = DispatchQueue(label: "MacBattery.Health.io", qos: .utility)
     private var handle: FileHandle?
@@ -177,10 +206,24 @@ private final class BatteryHealthLogStore {
     /// 清空磁盘历史：关闭句柄、删除 CSV（下次写入会重建文件并重新写表头）。
     func clearDisk() {
         ioQueue.async { [self] in
-            if let h = handle { try? h.close() }
+            if let h = handle {
+                do {
+                    try h.close()
+                } catch {
+                    Self.logger.error("关闭 CSV 写句柄失败: \(error.localizedDescription, privacy: .public)")
+                }
+            }
             handle = nil
             headerWritten = false
-            try? FileManager.default.removeItem(at: fileURL)
+            let url = fileURL
+            // 文件本就不存在时视为已达成目标，不记错误，避免 reset 时刷无意义日志。
+            if FileManager.default.fileExists(atPath: url.path) {
+                do {
+                    try FileManager.default.removeItem(at: url)
+                } catch {
+                    Self.logger.error("删除 CSV 失败: \(url.path, privacy: .public), \(error.localizedDescription, privacy: .public)")
+                }
+            }
         }
     }
 
@@ -217,9 +260,19 @@ private final class BatteryHealthLogStore {
         if let h = handle { return h }
         let url = fileURL
         if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: nil)
+            let created = FileManager.default.createFile(atPath: url.path, contents: nil)
+            if !created {
+                Self.logger.error("创建 CSV 失败: \(url.path, privacy: .public)")
+            }
         }
-        guard let h = try? FileHandle(forWritingTo: url) else { return nil }
+        let opened: FileHandle
+        do {
+            opened = try FileHandle(forWritingTo: url)
+        } catch {
+            Self.logger.error("打开 CSV 写句柄失败: \(url.path, privacy: .public), \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+        let h = opened
         // 关键：FileHandle(forWritingTo:) 的文件指针在开头，这里移动到文件末尾，
         // 以追加方式写入，避免应用重启后新数据从头部覆盖旧历史。
         try? h.seekToEnd()
@@ -255,7 +308,11 @@ private final class BatteryHealthLogStore {
             defer { try? fh.close() }
             do { try fh.seek(toOffset: UInt64(offset)) } catch { break }
             let data = (try? fh.read(upToCount: len)) ?? Data()
-            guard var text = String(data: data, encoding: .utf8) else { break }
+            // 用 String(decoding:as:) 而非 String(data:encoding:)：后者在块边界落在
+            // 多字节字符中间时返回 nil，会 break 掉**整段**历史（与 1.1.5/1.1.9 反复出现的
+            // "曲线空白"同源）。前者永不失败，非法字节替换为 U+FFFD，最多影响该行
+            //（解析失败已由 parseCSVLine 返回 nil 处理）。
+            var text = String(decoding: data, as: UTF8.self)
             text += leftover
             var lines: [Substring] = text.split(separator: "\n")
             if offset > 0 && !lines.isEmpty {
@@ -270,6 +327,11 @@ private final class BatteryHealthLogStore {
                     if result.count >= limit { break }
                 }
             }
+        }
+        // 因读取字节上限而提前结束（而非读完全部或凑够 limit）：历史文件过大，
+        // 更早的数据被截断。此前静默发生，现在留下痕迹。
+        if offset > 0 && result.count < limit {
+            Self.logger.warning("历史文件过大，回填被截断: 剩余 \(offset, privacy: .public) 字节未读")
         }
         result = result.filter { $0.t != .distantPast }
         return result.sorted { $0.t < $1.t }

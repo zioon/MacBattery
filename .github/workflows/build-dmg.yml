@@ -6,6 +6,11 @@ name: Build and release DMG
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      version:
+        description: '发布版本号（不含 v 前缀，例如 1.1.12）'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -19,6 +24,42 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # 版本号单一来源：手动触发用输入值，tag push 用 tag 名，否则回退到最近的 tag。
+      # 解析结果供后续的一致性校验与 Info.plist 写入使用。
+      - name: Resolve release version
+        id: version
+        run: |
+          set -e
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VER="${{ github.event.inputs.version }}"
+          elif [ "${GITHUB_REF_NAME#v}" != "$GITHUB_REF_NAME" ]; then
+            VER="${GITHUB_REF_NAME#v}"
+          else
+            VER="$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')"
+          fi
+          if [ -z "$VER" ]; then
+            echo "::error::无法确定版本号"
+            exit 1
+          fi
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "release version: $VER"
+
+      # 一致性校验：避免"改了代码版本号却忘了同步 / 忘了写 CHANGELOG"导致应用内自动更新错乱。
+      - name: Check version consistency
+        run: |
+          set -e
+          VER="${{ steps.version.outputs.version }}"
+          SRC="$(sed -n 's/.*static let fallback = "\([0-9A-Za-z.-]*\)".*/\1/p' Sources/MacBattery/Updater.swift | head -n1)"
+          echo "AppVersion.fallback = $SRC ; release version = $VER"
+          if [ "$SRC" != "$VER" ]; then
+            echo "::error::版本号不一致：Updater.swift 的 AppVersion.fallback ($SRC) 与发布版本 ($VER) 不同"
+            exit 1
+          fi
+          if ! grep -q "^## \[$VER\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md 缺少 [$VER] 小节"
+            exit 1
+          fi
 
       - name: Build (release, universal)
         run: swift build -c release --arch arm64 --arch x86_64
@@ -44,13 +85,13 @@ jobs:
             echo "installed app icon"
           fi
 
-          # 发版时用 tag（如 v1.2.0）覆盖 Info.plist 版本号，保证应用内自动更新能正确比对版本。
-          if [ -n "$GITHUB_REF_NAME" ] && [ "${GITHUB_REF_NAME#v}" != "$GITHUB_REF_NAME" ]; then
-            VER="${GITHUB_REF_NAME#v}"
-            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VER" "$APP/Contents/Info.plist"
-            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VER" "$APP/Contents/Info.plist"
-            echo "set bundle version to $VER"
-          fi
+          # 用解析出的版本号覆盖 Info.plist，保证应用内自动更新能正确比对版本。
+          # 无条件覆盖：workflow_dispatch 时 GITHUB_REF_NAME 是分支名（没有 v 前缀），
+          # 旧的条件判断会整段跳过，导致版本号停在 base64 Info.plist 里硬编码的 1.0.0。
+          VER="${{ steps.version.outputs.version }}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VER" "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VER" "$APP/Contents/Info.plist"
+          echo "set bundle version to $VER"
 
           codesign --force --sign - "$APP" >/dev/null 2>&1 || true
 

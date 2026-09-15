@@ -60,13 +60,33 @@ final class FloatingPanelController: NSWindowController {
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     deinit {
+        // 只做能安全同步完成的事：摘除通知观察者。
+        // 原先这里还有 `Task { @MainActor [weak self] in self?.monitor.stop() ... }`，
+        // 但 deinit 时引用计数已为 0，`[weak self]` 必然为 nil —— 那条清理路径从未执行过。
+        // 真正的清理改由显式入口 `shutdown()` 承担（见下）。
         if let observer = moveObserver {
             NotificationCenter.default.removeObserver(observer)
         }
-        Task { @MainActor [weak self] in
-            self?.monitor.stop()
-            self?.healthLogger.stop()
+    }
+
+    /// 显式清理入口，由 AppDelegate.applicationWillTerminate 调用。
+    /// 原先放在 deinit 里的 `Task { @MainActor [weak self] }` 因 weak self 必为 nil 而从未执行，
+    /// 导致 PowerLogger.stop() 的最终 flushPending() 不跑、timer 不取消、RunLoop 源不摘除。
+    ///
+    /// 已知取舍：**不引入** SIGINT/SIGTERM 信号处理器做"优雅退出" —— README 把终端 Ctrl+C
+    /// 作为 `swift run` 的退出方式，一旦 `NSApp.terminate` 在 `.accessory` 激活策略下行为异常，
+    /// 就会破坏用户现有的退出方式；而收益只是挽回最多 1 秒的待落盘样本
+    ///（`PowerLogger` 每 1 秒 flush 一次）。风险收益不成比例，已评估并接受：
+    /// **Ctrl+C 直杀进程会丢最多 1 秒样本。**
+    @MainActor
+    func shutdown() {
+        monitor.stop()      // 内部会 logger.stop() → flushPending()
+        healthLogger.stop()
+        if let observer = moveObserver {
+            NotificationCenter.default.removeObserver(observer)
+            moveObserver = nil
         }
+        window?.close()
     }
 
     // MARK: - 应用设置

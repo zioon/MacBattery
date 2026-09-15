@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import os
 
 /// 一次采样记录的完整数据点（内存态）。
 struct PowerSample {
@@ -91,7 +92,17 @@ final class PowerLogger: ObservableObject {
         store.readRecent(limit: Self.historyBackfill) { [weak self] history in
             Task { @MainActor [weak self] in
                 guard let self, self.generation == gen else { return }
-                self.samples = history
+                // 不能直接用 history 覆盖 samples：回填是异步的，它抵达时内存里
+                // 可能已经有新追加的采样，直接覆盖会静默丢弃它们（v1.1.9 只在健康日志
+                // 修过，功率日志此处漏修）。与内存新采样合并才能保证两侧数据都不丢。
+                let merged = mergedByTimestamp(history: history,
+                                               new: self.samples,
+                                               timestamp: { $0.t },
+                                               capacity: Self.memoryCapacity)
+                guard merged.count != self.samples.count
+                        || merged.last?.t != self.samples.last?.t else { return }
+                self.objectWillChange.send()
+                self.samples = merged
             }
         }
     }
@@ -108,6 +119,9 @@ final class PowerLogger: ObservableObject {
 
 /// 非隔离的 CSV 持久化（在后台串行队列使用，全部 self-contained）。
 private final class PowerLogStore {
+
+    /// IO 失败此前全部被 `try?` 静默吞掉，历史丢失时无任何痕迹；改为记录到系统日志。
+    private static let logger = Logger(subsystem: "com.zioon.macbattery", category: "io")
 
     private let ioQueue = DispatchQueue(label: "MacBattery.Logger.io", qos: .utility)
     private var handle: FileHandle?
@@ -131,10 +145,24 @@ private final class PowerLogStore {
     /// 清空磁盘历史：关闭句柄、删除 CSV（下次写入会重建文件并重新写表头）。
     func clearDisk() {
         ioQueue.async { [self] in
-            if let h = handle { try? h.close() }
+            if let h = handle {
+                do {
+                    try h.close()
+                } catch {
+                    Self.logger.error("关闭 CSV 写句柄失败: \(error.localizedDescription, privacy: .public)")
+                }
+            }
             handle = nil
             headerWritten = false
-            try? FileManager.default.removeItem(at: fileURL)
+            let url = fileURL
+            // 文件本就不存在时视为已达成目标，不记错误，避免 reset 时刷无意义日志。
+            if FileManager.default.fileExists(atPath: url.path) {
+                do {
+                    try FileManager.default.removeItem(at: url)
+                } catch {
+                    Self.logger.error("删除 CSV 失败: \(url.path, privacy: .public), \(error.localizedDescription, privacy: .public)")
+                }
+            }
         }
     }
 
@@ -172,9 +200,19 @@ private final class PowerLogStore {
         if let h = handle { return h }
         let url = fileURL
         if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: nil)
+            let created = FileManager.default.createFile(atPath: url.path, contents: nil)
+            if !created {
+                Self.logger.error("创建 CSV 失败: \(url.path, privacy: .public)")
+            }
         }
-        guard let h = try? FileHandle(forWritingTo: url) else { return nil }
+        let opened: FileHandle
+        do {
+            opened = try FileHandle(forWritingTo: url)
+        } catch {
+            Self.logger.error("打开 CSV 写句柄失败: \(url.path, privacy: .public), \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+        let h = opened
         // 关键：FileHandle(forWritingTo:) 的文件指针在开头，这里移动到文件末尾，
         // 以追加方式写入，避免应用重启后新数据从头部覆盖旧历史。
         try? h.seekToEnd()
@@ -209,7 +247,11 @@ private final class PowerLogStore {
             defer { try? fh.close() }
             do { try fh.seek(toOffset: UInt64(offset)) } catch { break }
             let data = (try? fh.read(upToCount: len)) ?? Data()
-            guard var text = String(data: data, encoding: .utf8) else { break }
+            // 用 String(decoding:as:) 而非 String(data:encoding:)：后者在块边界落在
+            // 多字节字符中间时返回 nil，会 break 掉**整段**历史（与 1.1.5/1.1.9 反复出现的
+            // "曲线空白"同源）。前者永不失败，非法字节替换为 U+FFFD，最多影响该行
+            //（解析失败已由 parseCSVLine 返回 nil 处理）。
+            var text = String(decoding: data, as: UTF8.self)
             text += leftover
             var lines: [Substring] = text.split(separator: "\n")
             if offset > 0 && !lines.isEmpty {
@@ -225,6 +267,11 @@ private final class PowerLogStore {
                     if result.count >= limit { break }
                 }
             }
+        }
+        // 因读取字节上限而提前结束（而非读完全部或凑够 limit）：历史文件过大，
+        // 更早的数据被截断。此前静默发生，现在留下痕迹。
+        if offset > 0 && result.count < limit {
+            Self.logger.warning("历史文件过大，回填被截断: 剩余 \(offset, privacy: .public) 字节未读")
         }
         // 过滤表头并升序。
         result = result.filter { $0.t != .distantPast }

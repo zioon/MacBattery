@@ -19,7 +19,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        windowController?.close()
+        // 走显式清理入口：停止采样 / 取消定时器 / 摘除 RunLoop 源 / 最终 flush 落盘。
+        // 原先的 `close()` 不会触发这些（deinit 里的 Task { [weak self] } 从未执行）。
+        windowController?.shutdown()
     }
 
     func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {

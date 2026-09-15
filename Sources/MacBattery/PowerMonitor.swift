@@ -22,6 +22,10 @@ enum Sampler {
     }
 
     static func sample(tdp: Double) -> Frame {
+        // 护栏断言：硬件读取（IOKit / SMC / pmset）不得在主线程（U-01 第 3 步）。
+        // 任何未来的新入口一旦在主线程调用，开发期立刻崩溃而不是悄悄拖慢 UI。
+        dispatchPrecondition(condition: .notOnQueue(.main))
+
         var f = Frame()
         f.batteryPercent = BatteryReader.level()
 
@@ -124,17 +128,23 @@ final class PowerMonitor: ObservableObject {
         sampleSource = src
     }
 
-    /// 主线程入口：刷新 TDP 缓存并立即采样一次（供电源事件即时触发 / 设置变更即时刷新）。
+    /// 主线程入口：刷新 TDP 缓存并把采样**入队**（不在主线程就地执行硬件读取）。
+    /// 供电源事件即时触发 / 设置变更即时刷新使用。
     private func scheduleSample() {
         tdpBox.value = settings.tdpWatts
-        performSampling()
+        sampleQueue.async { [weak self] in self?.performSampling() }
     }
 
-    /// 后台采样（可在采样队列线程调用）：读缓存 TDP → 采样 → 回主线程发布与展示。
+    /// 后台采样（始终在 sampleQueue 上被调用）：读缓存 TDP → 采样 → 回主线程发布与展示。
+    /// 调用方有二：0.5s 定时器（`startSamplingTimer`）与 `scheduleSample()` 入队。
     private nonisolated func performSampling() {
         let frame = Sampler.sample(tdp: tdpBox.value)
         Task { @MainActor [weak self] in
             guard let self else { return }
+            // ⚠️ 这一行是 TDP 设置变更传播到采样线程的**唯一通道**，不要删：
+            // `refreshOnce()` 经 grep 确认全仓无调用点（死代码），
+            // 而 SettingsStore.onChange 只触发 applySettings()、不碰 TDP；
+            // 删掉它，用户在设置里拖 TDP 滑块将永远不生效。
             // 每次主线程收尾时刷新 TDP 缓存，让设置变更在下一拍生效。
             self.tdpBox.value = self.settings.tdpWatts
             self.apply(frame)
@@ -186,12 +196,27 @@ final class PowerMonitor: ObservableObject {
     }
 }
 
-/// 跨线程 TDP 缓存：主线程（设置变更 / 每次采样收尾）写入，后台采样线程读取。
-/// 仅存一个 Double，数据竞争可忽略，避免在 @MainActor 类内用 nonisolated(unsafe)。
+/// 跨线程 TDP 缓存：主线程写入（设置变更 / 每次采样收尾），后台采样线程读取。
+/// 用 NSLock 保护：读写都不嵌套其它锁，也不跨子进程持有，无死锁风险。
+///（第一批只锁了 BatteryReader / SMCReader / SystemPower，这里补上。）
 private final class TDPBox {
-    var value: Double
+    private let lock = NSLock()
+    private var storage: Double
 
     init(_ value: Double = 45) {
-        self.value = value
+        storage = value
+    }
+
+    var value: Double {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            storage = newValue
+        }
     }
 }
