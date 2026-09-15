@@ -1,8 +1,9 @@
 import SwiftUI
 import AppKit
 
-/// 电池健康信息图表：位于主功率图表下方，4 项健康指标（当前最大容量 / 设计容量 / 电池健康度 / 循环次数）
-/// 以「共享时间轴 + 每行独立自适应 y 轴」的 4 行子图展示。默认时间跨度 1 个月（30 天）。
+/// 电池健康信息图表：上图将「设计容量 + 当前最大容量」（左轴，mAh）与「电池健康度」
+/// （右轴副坐标，%）合成一张图，三条折线共共享时间轴；下图单独展示循环次数。
+/// 默认时间跨度 1 个月（30 天）。
 ///
 /// 交互（参照主图 PowerChartView）：
 /// - 拖拽 / 横向滚动：左右平移时间；Option + 纵向滚动：缩放各行 y 轴范围。
@@ -18,9 +19,9 @@ struct BatteryHealthChartView: View {
     @State private var endTime: Date = Date()
     @State private var followLive = true
     @State private var autoY = true
-    /// 每行的 y 轴范围（下标与 Self.metrics 一一对应）。
-    @State private var yMin: [Double] = [0, 0, 50, 0]
-    @State private var yMax: [Double] = [10_000, 10_000, 100, 500]
+    /// 各绘图轴的范围：0=容量轴（上图左，mAh）1=健康度轴（上图右副坐标，%）2=循环次数轴（下图）。
+    @State private var yMin: [Double] = [0, 50, 0]
+    @State private var yMax: [Double] = [10_000, 100, 500]
 
     /// 鼠标在图表内的悬停位置（相对画布全尺寸，y 向下，nil 表示已离开）。
     @State private var hoverPoint: CGPoint?
@@ -44,7 +45,8 @@ struct BatteryHealthChartView: View {
         let format: (Double) -> String
     }
 
-    private static let metrics: [HealthMetric] = [
+    /// 上图左轴（容量，mAh）：设计容量 + 当前最大容量，共轴。
+    private static let capacityMetrics: [HealthMetric] = [
         HealthMetric(title: "当前最大容量",
                      color: Color(red: 0.16, green: 0.85, blue: 0.62),
                      value: { Double($0.maxCapacity) },
@@ -52,16 +54,23 @@ struct BatteryHealthChartView: View {
         HealthMetric(title: "设计容量",
                      color: Color(red: 0.30, green: 0.62, blue: 0.95),
                      value: { Double($0.designCapacity) },
-                     format: { "\(Int($0)) mAh" }),
-        HealthMetric(title: "电池健康度",
+                     format: { "\(Int($0)) mAh" })
+    ]
+
+    /// 上图右轴（副坐标，%）：电池健康度。
+    private static let healthMetric = HealthMetric(title: "电池健康度",
                      color: Color(red: 0.96, green: 0.75, blue: 0.20),
                      value: { $0.healthPercent },
-                     format: { String(format: "%.1f%%", $0) }),
-        HealthMetric(title: "循环次数",
+                     format: { String(format: "%.1f%%", $0) })
+
+    /// 下图（循环次数）。
+    private static let cycleMetric = HealthMetric(title: "循环次数",
                      color: Color(red: 0.95, green: 0.45, blue: 0.42),
                      value: { Double($0.cycleCount) },
                      format: { "\(Int($0)) 次" })
-    ]
+
+    /// 顶部指标条展示的全部指标（容量 2 项 + 健康度 + 循环次数）。
+    private static var allMetrics: [HealthMetric] { capacityMetrics + [healthMetric, cycleMetric] }
 
     init(healthLogger: BatteryHealthLogger) {
         self.healthLogger = healthLogger
@@ -93,7 +102,7 @@ struct BatteryHealthChartView: View {
             Text("电池健康")
                 .font(.headline)
                 .foregroundColor(.primary)
-            ForEach(Array(Self.metrics.enumerated()), id: \.offset) { _, m in
+            ForEach(Array(Self.allMetrics.enumerated()), id: \.offset) { _, m in
                 legendChip(m)
             }
             Spacer()
@@ -186,7 +195,7 @@ struct BatteryHealthChartView: View {
 
     private var chartArea: some View {
         GeometryReader { geo in
-            let plot = HealthPlot(outer: geo.size, left: 80, right: 10, top: 8, bottom: 26, rows: Self.metrics.count)
+            let plot = HealthPlot(outer: geo.size, left: 46, right: 44, top: 8, bottom: 26)
             let draw = buildDraw(plot)
             let hover = healthHoverInfo(hoverX: hoverPoint?.x, plot: plot)
 
@@ -234,36 +243,46 @@ struct BatteryHealthChartView: View {
         let end = lo
         let visible = start < end ? Array(samples[start..<end]) : []
 
-        var yRanges: [ClosedRange<Double>] = []
-        for (i, m) in Self.metrics.enumerated() {
-            let r: ClosedRange<Double>
+        func rangeFor(_ i: Int, _ auto: () -> ClosedRange<Double>) -> ClosedRange<Double> {
             if autoY {
-                r = autoRange(visible, metric: m)
+                return auto()
             } else {
-                // 手动缩放后保持原范围，仅确保非空。
                 let lo = yMin[i], hi = max(yMin[i] + 1e-9, yMax[i])
-                r = lo...hi
+                return lo...hi
             }
-            yRanges.append(r)
         }
+        let capRange = rangeFor(0) { autoRange(visible, metrics: Self.capacityMetrics) }
+        let healthRange = rangeFor(1) { autoRange(visible, metric: Self.healthMetric) }
+        let cycleRange = rangeFor(2) { autoRange(visible, metric: Self.cycleMetric) }
 
         return HealthDraw(
             visibleSamples: visible,
             startE: startE, endE: endE,
             plot: plot,
-            metrics: Self.metrics,
-            yRanges: yRanges
+            capacityMetrics: Self.capacityMetrics,
+            healthMetric: Self.healthMetric,
+            cycleMetric: Self.cycleMetric,
+            capRange: capRange,
+            healthRange: healthRange,
+            cycleRange: cycleRange
         )
     }
 
     /// 按可见样本为该指标自适应 y 范围，带 10% 内边距，最小跨度 1。
     private func autoRange(_ visible: [BatteryHealthSample], metric: HealthMetric) -> ClosedRange<Double> {
+        autoRange(visible, metrics: [metric])
+    }
+
+    /// 按可见样本为该组指标自适应 y 范围（取组内全部指标值的 min/max），带 10% 内边距，最小跨度 1。
+    private func autoRange(_ visible: [BatteryHealthSample], metrics: [HealthMetric]) -> ClosedRange<Double> {
         guard !visible.isEmpty else { return 0...100 }
         var lo = Double.greatestFiniteMagnitude
         var hi = -Double.greatestFiniteMagnitude
         for s in visible {
-            let v = metric.value(s)
-            lo = min(lo, v); hi = max(hi, v)
+            for m in metrics {
+                let v = m.value(s)
+                lo = min(lo, v); hi = max(hi, v)
+            }
         }
         guard lo.isFinite, hi.isFinite else { return 0...100 }
         if hi - lo < 1 { let m = (lo + hi) / 2; lo = m - 1; hi = m + 1 }
@@ -275,14 +294,14 @@ struct BatteryHealthChartView: View {
 
     // MARK: - 悬停
 
-    /// 由鼠标 x 坐标定位最近的健康样本，生成跨 4 行数值浮层所需数据。
+    /// 由鼠标 x 坐标定位最近的健康样本，生成跨两个绘图区域的数值浮层所需数据。
     private func healthHoverInfo(hoverX: CGFloat?, plot: HealthPlot) -> HealthHoverInfo? {
         guard let hx = hoverX, hx >= plot.minX, hx <= plot.maxX else { return nil }
         let startE = endTime.timeIntervalSince1970 - timeRange
         let targetE = startE + Double(hx - plot.minX) / plot.plotW * timeRange
         guard let s = nearestSample(upTo: targetE, in: healthLogger.samples) else { return nil }
         let x = plot.minX + (s.t.timeIntervalSince1970 - startE) / timeRange * plot.plotW
-        let rows = Self.metrics.map { m in
+        let rows = Self.allMetrics.map { m in
             HealthHoverInfo.Row(color: m.color, title: m.title, value: m.format(m.value(s)))
         }
         return HealthHoverInfo(x: x, date: s.t, rows: rows)
@@ -411,20 +430,25 @@ private struct HealthHoverInfo {
 
 // MARK: - 绘图区域
 
+/// 绘图区域：上图（容量左轴 + 健康度右轴副坐标，占约 2/3 高度）+ 下图（循环次数，约 1/3）。
 private struct HealthPlot {
     let outer: CGSize
     let left, right, top, bottom: Double
-    let rows: Int
-    var rowGap: Double { 6 }
+    var gap: Double { 8 }
 
     var plotW: Double { max(10, outer.width - left - right) }
     var plotH: Double { max(10, outer.height - top - bottom) }
-    var rowH: Double { (plotH - Double(rows - 1) * rowGap) / Double(rows) }
+    var topRatio: Double { 0.62 }
+    var topH: Double { max(10, plotH * topRatio) }
+    var bottomH: Double { max(10, plotH - topH - gap) }
     var minX: Double { left }
     var maxX: Double { left + plotW }
-
-    func rowY(_ i: Int) -> Double { top + Double(i) * (rowH + rowGap) }
-    func rowBottom(_ i: Int) -> Double { rowY(i) + rowH }
+    /// 上图区域（容量 / 健康度）。
+    var topY: Double { top }
+    var topBottom: Double { top + topH }
+    /// 下图区域（循环次数）。
+    var bottomY: Double { top + topH + gap }
+    var bottomBottom: Double { top + plotH }
 }
 
 // MARK: - 实际绘图对象
@@ -434,8 +458,12 @@ private struct HealthDraw {
     let startE: Double
     let endE: Double
     let plot: HealthPlot
-    let metrics: [BatteryHealthChartView.HealthMetric]
-    let yRanges: [ClosedRange<Double>]
+    let capacityMetrics: [BatteryHealthChartView.HealthMetric]
+    let healthMetric: BatteryHealthChartView.HealthMetric
+    let cycleMetric: BatteryHealthChartView.HealthMetric
+    let capRange: ClosedRange<Double>
+    let healthRange: ClosedRange<Double>
+    let cycleRange: ClosedRange<Double>
 
     private var span: Double { max(1e-9, endE - startE) }
 
@@ -444,24 +472,23 @@ private struct HealthDraw {
         clip.addRect(CGRect(x: plot.minX, y: plot.top, width: plot.plotW, height: plot.plotH))
         context.drawLayer { layer in
             layer.clip(to: clip)
-            // 各行的横向网格 + 折线
-            for i in metrics.indices {
-                let color = metrics[i].color
-                let range = yRanges[i]
-                let yTop = plot.rowY(i)
-                let yBot = plot.rowBottom(i)
-                // 行内网格（下 / 中 / 上）
-                for f in [0.0, 0.5, 1.0] {
-                    let yy = yBot - f * plot.rowH
-                    var p = Path()
-                    p.move(to: CGPoint(x: plot.minX, y: yy))
-                    p.addLine(to: CGPoint(x: plot.maxX, y: yy))
-                    layer.stroke(p, with: .color(.gray.opacity(f == 0.5 ? 0.10 : 0.06)), lineWidth: 1)
-                }
-                // 折线
-                let pts = points(i: i, range: range, yTop: yTop, yBot: yBot)
-                stroke(pts, color: color, in: layer)
+            // 上图：容量轴横向网格（下 / 中 / 上）
+            grid(f: [0.0, 0.5, 1.0], yTop: plot.topY, height: plot.topH, in: layer)
+            // 上图：容量折线 × 2（设计容量 + 当前最大容量，共左轴）
+            for m in capacityMetrics {
+                stroke(pts: points(v: { m.value($0) }, range: capRange,
+                                   yTop: plot.topY, yBot: plot.topBottom),
+                       color: m.color, in: layer)
             }
+            // 上图：健康度折线（右轴副坐标）
+            stroke(pts: points(v: { healthMetric.value($0) }, range: healthRange,
+                               yTop: plot.topY, yBot: plot.topBottom),
+                   color: healthMetric.color, in: layer)
+            // 下图：循环次数网格 + 折线
+            grid(f: [0.0, 0.5, 1.0], yTop: plot.bottomY, height: plot.bottomH, in: layer)
+            stroke(pts: points(v: { cycleMetric.value($0) }, range: cycleRange,
+                               yTop: plot.bottomY, yBot: plot.bottomBottom),
+                   color: cycleMetric.color, in: layer)
             // 共享时间网格（纵向）
             for tick in timeTicks() {
                 let xx = timeX(tick)
@@ -473,17 +500,25 @@ private struct HealthDraw {
             }
         }
 
-        // 行标题（不裁剪，左边缘靠上；取消 y 轴上下数据标记）
-        for i in metrics.indices {
-            let yTop = plot.rowY(i)
-            let m = metrics[i]
-            // 行标题（左边缘，靠上）
-            let title = Text(m.title).font(.system(size: 9, weight: .semibold))
-                .foregroundColor(m.color)
-            context.draw(title, at: CGPoint(x: plot.minX - 6, y: yTop + 1), anchor: .topTrailing)
-        }
+        // 上图左轴刻度（容量 mAh）
+        drawAxisTicks(range: capRange, x: plot.minX, align: .trailing,
+                      yTop: plot.topY, height: plot.topH, in: context) { "\(Int($0))" }
+        // 上图右轴刻度（健康度 %，副坐标）
+        drawAxisTicks(range: healthRange, x: plot.maxX, align: .leading,
+                      yTop: plot.topY, height: plot.topH, in: context) { String(format: "%.0f%%", $0) }
+        // 左右轴单位标签（顶部分别标注 mAh / %）
+        let mAh = Text("mAh").font(.system(size: 9)).foregroundColor(.gray)
+        context.draw(mAh, at: CGPoint(x: plot.minX - 4, y: plot.top - 1), anchor: .bottomTrailing)
+        let pct = Text("%").font(.system(size: 9)).foregroundColor(.gray)
+        context.draw(pct, at: CGPoint(x: plot.maxX + 4, y: plot.top - 1), anchor: .bottomLeading)
+
+        // 下图行标题（左边缘，靠上）
+        let cTitle = Text(cycleMetric.title).font(.system(size: 9, weight: .semibold))
+            .foregroundColor(cycleMetric.color)
+        context.draw(cTitle, at: CGPoint(x: plot.minX - 6, y: plot.bottomY + 1), anchor: .topTrailing)
+
         // 底部共享时间轴
-        let formatter = Self.xFormatter(for: metrics.count > 0 ? self.span : 30 * 86400)
+        let formatter = Self.xFormatter(for: span)
         for tick in timeTicks() {
             let xx = timeX(tick)
             if xx < plot.minX || xx > plot.maxX { continue }
@@ -499,9 +534,39 @@ private struct HealthDraw {
             context.draw(text, at: CGPoint(x: plot.minX + plot.plotW / 2, y: plot.top + plot.plotH / 2))
         }
 
-        // 悬停：跨 4 行的竖线 + 该时刻数值浮层。
+        // 悬停：跨两个区域的竖线 + 该时刻数值浮层。
         if let hover {
             drawHover(hover, in: context)
+        }
+    }
+
+    /// 绘制水平网格线（下 / 中 / 上 三等分位置）。
+    private func grid(f fractions: [Double], yTop: Double, height: Double, in layer: GraphicsContext) {
+        for f in fractions {
+            let yy = yTop + height - f * height
+            var p = Path()
+            p.move(to: CGPoint(x: plot.minX, y: yy))
+            p.addLine(to: CGPoint(x: plot.maxX, y: yy))
+            layer.stroke(p, with: .color(.gray.opacity(f == 0.5 ? 0.10 : 0.06)), lineWidth: 1)
+        }
+    }
+
+    /// 沿纵轴绘制下 / 中 / 上三个刻度与数值标签（用于左 / 右轴）。
+    private func drawAxisTicks(range: ClosedRange<Double>, x: Double, align: UnitPoint,
+                               yTop: Double, height: Double, in ctx: GraphicsContext,
+                               format: (Double) -> String) {
+        let lo = range.lowerBound, hi = range.upperBound
+        let s = max(1e-9, hi - lo)
+        let inward: CGFloat = align == .leading ? 4 : -4
+        for f in [0.0, 0.5, 1.0] {
+            let v = lo + f * s
+            let yy = yTop + height - f * height
+            var p = Path()
+            p.move(to: CGPoint(x: x, y: yy))
+            p.addLine(to: CGPoint(x: x + inward, y: yy))
+            ctx.stroke(p, with: .color(.gray.opacity(0.5)), lineWidth: 1)
+            let t = Text(format(v)).font(.system(size: 8)).foregroundColor(.gray)
+            ctx.draw(t, at: CGPoint(x: x - inward * 1.5, y: yy), anchor: align)
         }
     }
 
@@ -510,7 +575,7 @@ private struct HealthDraw {
         let x = CGFloat(hover.x)
         guard x >= plot.minX, x <= plot.maxX else { return }
 
-        // 竖线跨全部 4 行。
+        // 竖线跨全部两个区域。
         var vp = Path()
         vp.move(to: CGPoint(x: x, y: plot.top))
         vp.addLine(to: CGPoint(x: x, y: plot.top + plot.plotH))
@@ -541,16 +606,17 @@ private struct HealthDraw {
         }
     }
 
-    private func points(i: Int, range: ClosedRange<Double>, yTop: Double, yBot: Double) -> [CGPoint] {
+    private func points(v: (BatteryHealthSample) -> Double, range: ClosedRange<Double>,
+                        yTop: Double, yBot: Double) -> [CGPoint] {
         let lo = range.lowerBound, hi = range.upperBound
         let s = max(1e-9, hi - lo)
         var pts: [CGPoint] = []
         pts.reserveCapacity(visibleSamples.count + 2)
         for sp in visibleSamples {
             let x = timeX(sp.t.timeIntervalSince1970)
-            let v = metrics[i].value(sp)
-            let norm = (v - lo) / s
-            let y = yBot - norm * plot.rowH
+            let val = v(sp)
+            let norm = (val - lo) / s
+            let y = yBot - norm * (yBot - yTop)
             pts.append(CGPoint(x: x, y: max(yTop, min(yBot, y))))
         }
         if let first = pts.first { pts.insert(CGPoint(x: plot.minX, y: first.y), at: 0) }
