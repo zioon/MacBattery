@@ -59,13 +59,16 @@ enum BatteryReader {
             isCharging = (Self.ioPSIsCharging() ?? (chargingFlag == 1)) || (ampere < 0 && volt > 0)
         }
 
-        // 电压/电流/功率：与充电状态解耦（参考 macmonitor：功率 = |Amperage| × Voltage）。
-        // 只要电压有效且电流非零即返回读数——正在充电时为充电功率；
-        // 放电时返回放电电流读数（UI 以图标颜色区分状态）。避免充电状态误判连带清空功率。
+        // 电压/电流/功率与充电状态的关系：
+        // - 电压/电流恒返回读数（mV/mA 转 V/A）；
+        // - 充电功率仅在「正在充电」时返回：pmset 判定为充电，或电流方向为负（物理充入）。
+        //   放电时（Amperage 为正）返回 0，避免断电后仍显示充电功率造成误导。
         let voltValue = Double(volt) / 1000.0
-        guard volt > 0, ampere != 0 else { return (isCharging, 0, voltValue, 0) }
         let ampereAbs = Double(abs(ampere))
-        let watts = ampereAbs * Double(volt) / 1_000_000.0
+        let chargingNow = isCharging || (ampere < 0 && volt > 0)
+        let watts = (volt > 0 && ampere != 0 && chargingNow)
+            ? ampereAbs * Double(volt) / 1_000_000.0
+            : 0
         return (isCharging, watts, voltValue, ampereAbs / 1000.0)
     }
 

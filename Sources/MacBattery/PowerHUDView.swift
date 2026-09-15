@@ -176,10 +176,10 @@ struct PowerHUDView: View {
             : "0"
     }
 
-    /// 充电电压·电流，写在充电功率下方。电压/电流读数有效（非零）即显示，
-    /// 与充电状态解耦（参考 macmonitor：放电时同样显示电流读数，图标颜色区分状态）。
+    /// 充电电压·电流，写在充电功率下方。仅在正在充电时显示（与功率一致），
+    /// 放电时显示占位，避免放电电流读数被误认为充电。充电中电流为 0（涓流暂停）仍如实显示。
     private var voltageAmpsText: String {
-        monitor.chargingVoltage > 0 && monitor.chargingCurrent > 0
+        isCharging
             ? String(format: "%.1fV · %.1fA", monitor.chargingVoltage, monitor.chargingCurrent)
             : "--V · --A"
     }

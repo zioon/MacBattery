@@ -105,6 +105,10 @@ struct BatteryHealthChartView: View {
 
     private var presetBar: some View {
         HStack(spacing: 10) {
+            Text(summaryText)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            Spacer(minLength: 0)
             windowPresetButton("1d", Self.windowPresets[0])
             windowPresetButton("1w", Self.windowPresets[1])
             windowPresetButton("1m", Self.windowPresets[2])
@@ -117,8 +121,26 @@ struct BatteryHealthChartView: View {
                 .buttonStyle(.plain)
                 .font(.caption)
                 .foregroundColor(.red)
-            Spacer(minLength: 0)
         }
+    }
+
+    /// 底部信息：样本条数 + 已记录持续时长（与历史图表样式一致）。
+    private var summaryText: String {
+        let duration: TimeInterval
+        if let first = healthLogger.samples.first?.t,
+           let last = healthLogger.samples.last?.t {
+            duration = last.timeIntervalSince(first)
+        } else {
+            duration = 0
+        }
+        return "样本 \(healthLogger.samples.count) 个 · 已记录 " + timeText(duration)
+    }
+
+    private func timeText(_ seconds: TimeInterval) -> String {
+        if seconds < 60 { return "\(Int(seconds)) 秒" }
+        if seconds < 3600 { return "\(Int(seconds / 60)) 分钟" }
+        if seconds < 86400 { return String(format: "%.1f 小时", seconds / 3600) }
+        return String(format: "%.1f 天", seconds / 86400)
     }
 
     /// 当前命中的时间范围预设（未命中则返回 nil，视为「全部」选中）。
@@ -164,7 +186,7 @@ struct BatteryHealthChartView: View {
 
     private var chartArea: some View {
         GeometryReader { geo in
-            let plot = HealthPlot(outer: geo.size, left: 80, right: 10, top: 8, bottom: 18, rows: Self.metrics.count)
+            let plot = HealthPlot(outer: geo.size, left: 80, right: 10, top: 8, bottom: 26, rows: Self.metrics.count)
             let draw = buildDraw(plot)
             let hover = healthHoverInfo(hoverX: hoverPoint?.x, plot: plot)
 
