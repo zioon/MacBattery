@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 /// 电池健康信息的一个采样点（内存态）。
-struct BatteryHealthSample {
+struct BatteryHealthSample: Equatable {
     var t: Date
     var maxCapacity: Int
     var designCapacity: Int
