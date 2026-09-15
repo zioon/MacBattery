@@ -98,6 +98,10 @@ struct PowerChartView: View {
                     .buttonStyle(.plain)
                     .font(.caption.weight(activeWindowPreset == nil ? .semibold : .regular))
                     .foregroundColor(activeWindowPreset == nil ? Color.accentColor : .primary)
+                Button("重置数据") { confirmReset() }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .foregroundColor(.red)
             }
         }
         .padding(12)
@@ -450,6 +454,24 @@ struct PowerChartView: View {
         followLive = true
         rightAxisInitialized = false
         refreshRightAxis()
+    }
+
+    /// 确认后清空功率日志（内存 + 磁盘 CSV），历史不可恢复。
+    private func confirmReset() {
+        let alert = NSAlert()
+        alert.messageText = "重置历史数据"
+        alert.informativeText = "将清空功率日志的全部历史数据（含磁盘 CSV），且不可恢复。确定重置？"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "重置")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        logger.reset()
+        // 复位视图状态，回到空数据的默认视图。
+        endTime = Date()
+        timeRange = 30 * 60
+        autoRight = true
+        followLive = true
+        rightAxisInitialized = false
     }
 
     /// 当前命中的窗口预设（未命中则返回 nil，视为「全部」选中）。

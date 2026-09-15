@@ -69,10 +69,11 @@ struct BatteryHealthChartView: View {
     }
 
     var body: some View {
+        // 布局与历史窗口一致：顶部指标条 → 中间图表 → 底部时间窗工具条。
         VStack(spacing: 6) {
             header
-            presetBar
             chartArea
+            presetBar
         }
         .padding(.top, 8)
         .frame(minHeight: 240)
@@ -100,7 +101,7 @@ struct BatteryHealthChartView: View {
         .font(.caption)
     }
 
-    // MARK: - 时间范围快捷切换（参考历史图表）
+    // MARK: - 底部时间窗工具条（位置与历史图表一致，在图表下方）
 
     private var presetBar: some View {
         HStack(spacing: 10) {
@@ -112,10 +113,11 @@ struct BatteryHealthChartView: View {
             Button("全部") { fitToAll() }
                 .buttonStyle(.plain)
                 .font(.caption)
-            Spacer()
-            Text("健康数据变化慢，建议放大时间窗查看趋势")
-                .font(.caption2)
-                .foregroundColor(.secondary)
+            Button("重置数据") { confirmReset() }
+                .buttonStyle(.plain)
+                .font(.caption)
+                .foregroundColor(.red)
+            Spacer(minLength: 0)
         }
     }
 
@@ -349,6 +351,23 @@ struct BatteryHealthChartView: View {
         if range > maxView { range = maxView }
         timeRange = range
         endTime = Date()
+        autoY = true
+        followLive = true
+    }
+
+    /// 确认后清空电池健康日志（内存 + 磁盘 CSV），历史不可恢复。
+    private func confirmReset() {
+        let alert = NSAlert()
+        alert.messageText = "重置健康数据"
+        alert.informativeText = "将清空电池健康日志的全部历史数据（含磁盘 CSV），且不可恢复。确定重置？"
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "重置")
+        alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        healthLogger.reset()
+        // 复位视图状态，回到空数据的默认视图。
+        endTime = Date()
+        timeRange = 30 * 86400
         autoY = true
         followLive = true
     }

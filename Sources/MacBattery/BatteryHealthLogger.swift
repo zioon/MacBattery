@@ -40,6 +40,9 @@ final class BatteryHealthLogger: ObservableObject {
     /// 上一次成功写入的值；用于判断健康值是否发生变化。
     private var lastRecorded: BatteryHealthSample?
 
+    /// 代际计数：每次重置 +1，用于丢弃重置前已发出的异步磁盘回填，避免旧历史被塞回内存。
+    private var generation = 0
+
     init() {}
 
     /// 启动日志：先回填磁盘历史，再每 60s 采样一次（值变化才落盘）。
@@ -62,6 +65,15 @@ final class BatteryHealthLogger: ObservableObject {
     /// 立即采样一次并强制落盘（供打开健康窗口等时机调用），保证每次打开都留档、曲线始终可见。
     func recordNow() {
         sample(force: true)
+    }
+
+    /// 重置：清空内存缓冲与磁盘 CSV，历史从零开始（不可恢复）。
+    func reset() {
+        generation += 1
+        if !samples.isEmpty { objectWillChange.send() }
+        samples.removeAll()
+        lastRecorded = nil
+        store.clearDisk()
     }
 
     // MARK: - 采样
@@ -105,9 +117,10 @@ final class BatteryHealthLogger: ObservableObject {
     /// 从磁盘回填历史，仅在缓冲为空时执行。
     private func backfillHistory() {
         guard samples.isEmpty else { return }
+        let gen = generation
         store.readRecent(limit: Self.historyBackfill) { [weak self] history in
             Task { @MainActor [weak self] in
-                guard let self else { return }
+                guard let self, self.generation == gen else { return }
                 // 回填完成前若已有新采样写入缓冲，则保留内存中的最新数据、不覆盖，
                 // 避免异步回填把启动瞬间采到的点冲掉导致图表空白。
                 guard self.samples.isEmpty else { return }
@@ -138,6 +151,16 @@ private final class BatteryHealthLogStore {
     func write(_ batch: [BatteryHealthSample]) {
         guard !batch.isEmpty else { return }
         ioQueue.async { [self] in self.writeSamples(batch) }
+    }
+
+    /// 清空磁盘历史：关闭句柄、删除 CSV（下次写入会重建文件并重新写表头）。
+    func clearDisk() {
+        ioQueue.async { [self] in
+            if let h = handle { try? h.close() }
+            handle = nil
+            headerWritten = false
+            try? FileManager.default.removeItem(at: fileURL)
+        }
     }
 
     /// 读取最近若干历史记录，完成后在调用方提供的回调里返回（升序）。
@@ -175,8 +198,17 @@ private final class BatteryHealthLogStore {
         if !FileManager.default.fileExists(atPath: url.path) {
             FileManager.default.createFile(atPath: url.path, contents: nil)
         }
-        handle = try? FileHandle(forWritingTo: url)
-        return handle
+        guard let h = try? FileHandle(forWritingTo: url) else { return nil }
+        // 关键：FileHandle(forWritingTo:) 的文件指针在开头，这里移动到文件末尾，
+        // 以追加方式写入，避免应用重启后新数据从头部覆盖旧历史。
+        try? h.seekToEnd()
+        handle = h
+        // 文件已存在且非空时，表头早已写过，不再重复写入。
+        if let attr = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let size = (attr[.size] as? NSNumber)?.intValue, size > 0 {
+            headerWritten = true
+        }
+        return h
     }
 
     // MARK: 读

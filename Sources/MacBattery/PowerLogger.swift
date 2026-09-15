@@ -40,6 +40,9 @@ final class PowerLogger: ObservableObject {
     /// 待落盘的样本（每次 flush 清空）。
     private var pending: [PowerSample] = []
 
+    /// 代际计数：每次重置 +1，用于丢弃重置前已发出的异步磁盘回填，避免旧历史被塞回内存。
+    private var generation = 0
+
     init() {}
 
     /// 启动日志：先回填磁盘历史，再每 1s 合并落盘一次（降低 IO 次数）。
@@ -84,9 +87,22 @@ final class PowerLogger: ObservableObject {
     /// 从磁盘回填历史，使启动后也能看到趋势。仅在缓冲为空时执行。
     private func backfillHistory() {
         guard samples.isEmpty else { return }
+        let gen = generation
         store.readRecent(limit: Self.historyBackfill) { [weak self] history in
-            Task { @MainActor [weak self] in self?.samples = history }
+            Task { @MainActor [weak self] in
+                guard let self, self.generation == gen else { return }
+                self.samples = history
+            }
         }
+    }
+
+    /// 重置：清空内存缓冲与磁盘 CSV，历史从零开始（不可恢复）。
+    func reset() {
+        generation += 1
+        if !samples.isEmpty { objectWillChange.send() }
+        samples.removeAll()
+        pending.removeAll()
+        store.clearDisk()
     }
 }
 
@@ -110,6 +126,16 @@ private final class PowerLogStore {
     func write(_ batch: [PowerSample]) {
         guard !batch.isEmpty else { return }
         ioQueue.async { [self] in self.writeSamples(batch) }
+    }
+
+    /// 清空磁盘历史：关闭句柄、删除 CSV（下次写入会重建文件并重新写表头）。
+    func clearDisk() {
+        ioQueue.async { [self] in
+            if let h = handle { try? h.close() }
+            handle = nil
+            headerWritten = false
+            try? FileManager.default.removeItem(at: fileURL)
+        }
     }
 
     /// 读取最近若干历史记录，完成后在调用方提供的回调里返回（升序）。
@@ -148,8 +174,17 @@ private final class PowerLogStore {
         if !FileManager.default.fileExists(atPath: url.path) {
             FileManager.default.createFile(atPath: url.path, contents: nil)
         }
-        handle = try? FileHandle(forWritingTo: url)
-        return handle
+        guard let h = try? FileHandle(forWritingTo: url) else { return nil }
+        // 关键：FileHandle(forWritingTo:) 的文件指针在开头，这里移动到文件末尾，
+        // 以追加方式写入，避免应用重启后新数据从头部覆盖旧历史。
+        try? h.seekToEnd()
+        handle = h
+        // 文件已存在且非空时，表头早已写过，不再重复写入。
+        if let attr = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let size = (attr[.size] as? NSNumber)?.intValue, size > 0 {
+            headerWritten = true
+        }
+        return h
     }
 
     // MARK: 读

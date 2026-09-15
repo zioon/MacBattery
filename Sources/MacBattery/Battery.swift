@@ -49,29 +49,24 @@ enum BatteryReader {
         }
 
         // Amperage(mA) 负=充入、正=放电；Voltage(mV)。
-        // 充电状态以 IOPS（IOPSCopyPowerSourcesInfo）官方电源源为准——这与 macOS 系统
-        // 菜单栏电池图标的显示完全一致，插上充电器会即时置位，避免 AppleSmartBattery 的
-        // IsCharging 固件属性在插入瞬间滞后数秒而误判「不在充电」。
-        // IOPS 无数据时才退回 IsCharging 标志或电流方向判定。
+        // 充电状态判定与 MacMonitor 完全一致：以 `pmset -g batt` 为权威
+        // （charging = 含 "charging" 且不含 "discharging"，与系统菜单栏同源）。
+        // pmset 调用失败（进程无法启动）时退回 IOPS / IsCharging 标志 / 电流方向综合判定。
         let isCharging: Bool
-        if let flag = Self.ioPSIsCharging() {
-            isCharging = flag
-        } else if props["IsCharging"] != nil {
-            isCharging = chargingFlag == 1
+        if let pmset = Self.pmsetBatteryStatus() {
+            isCharging = pmset.charging
         } else {
-            isCharging = ampere < 0 && volt > 0
+            isCharging = (Self.ioPSIsCharging() ?? (chargingFlag == 1)) || (ampere < 0 && volt > 0)
         }
 
-        // 电压/电流（仅用于展示，单位为 V / A）。
+        // 电压/电流/功率：与充电状态解耦（参考 macmonitor：功率 = |Amperage| × Voltage）。
+        // 只要电压有效且电流非零即返回读数——正在充电时为充电功率；
+        // 放电时返回放电电流读数（UI 以图标颜色区分状态）。避免充电状态误判连带清空功率。
         let voltValue = Double(volt) / 1000.0
-        guard isCharging else { return (false, 0, voltValue, 0) }
-
-        // 充电时按实际电流计算功率；电流尚未建立（读取为 0）时不强行填功率。
-        // 部分机型 Amperage 符号约定可能与常见相反，因此在 isCharging 前提下取绝对值即可。
+        guard volt > 0, ampere != 0 else { return (isCharging, 0, voltValue, 0) }
         let ampereAbs = Double(abs(ampere))
-        let watts = (ampere != 0 && volt > 0) ? ampereAbs * Double(volt) / 1_000_000.0 : 0
-        let current = ampereAbs / 1000.0
-        return (true, watts, voltValue, current)
+        let watts = ampereAbs * Double(volt) / 1_000_000.0
+        return (isCharging, watts, voltValue, ampereAbs / 1000.0)
     }
 
     /// 电池健康信息（变化缓慢，供健康图表按需读取）。
@@ -116,7 +111,46 @@ enum BatteryReader {
         return b > 0 ? b : 0
     }
 
+    /// 用 `pmset -g batt` 判定电池状态，解析规则与 MacMonitor 的 fetchBattery 完全一致：
+    /// - onAC      = 输出含 "AC Power"（插着电源）
+    /// - charging  = 含 "charging" 且不含 "discharging"（正在充电）
+    /// - charged   = 含 "charged" 或 "finishing charge"（已充满 / 收尾充电）
+    /// pmset 与系统菜单栏电池图标同源；2 秒内复用上次结果，避免每 0.5s 采样拉起进程。
+    /// 仅在后台串行采样队列调用，静态缓存无需加锁。进程启动失败时返回 nil。
+    private static var pmsetCacheTime: TimeInterval = 0
+    private static var pmsetCache: (onAC: Bool, charging: Bool, charged: Bool)?
+
+    private static func pmsetBatteryStatus() -> (onAC: Bool, charging: Bool, charged: Bool)? {
+        let now = Date().timeIntervalSinceReferenceDate
+        if let cached = pmsetCache, now - pmsetCacheTime < 2.0 { return cached }
+
+        let process = Process()
+        let pipe = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
+        process.arguments = ["-g", "batt"]
+        process.standardOutput = pipe
+        process.standardError = pipe
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+        process.waitUntilExit()
+
+        guard let data = try? pipe.fileHandleForReading.readToEnd(),
+              let output = String(data: data, encoding: .utf8) else { return nil }
+        let status = (
+            onAC: output.contains("AC Power"),
+            charging: output.contains("charging") && !output.contains("discharging"),
+            charged: output.contains("charged") || output.contains("finishing charge")
+        )
+        pmsetCache = status
+        pmsetCacheTime = now
+        return status
+    }
+
     /// 用 IOPS 官方电源源判定是否在充电（与系统菜单栏电池图标一致，插拔即时）。
+    /// 兼容 CFBoolean（桥接为 Bool）与 CFNumber（0/1）两种取值形式。
     private static func ioPSIsCharging() -> Bool? {
         guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
               let sources = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef]
@@ -124,8 +158,9 @@ enum BatteryReader {
         for source in sources {
             guard let desc = IOPSGetPowerSourceDescription(blob, source)?.takeUnretainedValue()
                 as? [String: Any],
-                let flag = desc[kIOPSIsChargingKey] as? Bool else { continue }
-            return flag
+                let value = desc[kIOPSIsChargingKey] else { continue }
+            if let flag = value as? Bool { return flag }
+            if let n = value as? NSNumber { return n.boolValue }
         }
         return nil
     }
