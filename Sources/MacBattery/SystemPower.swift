@@ -7,17 +7,46 @@ import Darwin
 ///  3) 均不可用时，回退「CPU 功耗曲线 + 平台基础功耗」估算，保证始终有值显示
 enum SystemPower {
 
-    static func watts(tdp: Double, usage: Double? = nil) -> Double {
+    /// 整机功率读数及其可信度。`isEstimate == true` 表示这是经验公式估算值，不是实测。
+    struct Reading {
+        /// 整机功率（瓦特）。
+        var watts: Double
+        /// 是否为经验公式估算值（true = 估算，UI 以 `~` 前缀区分；false = 实测）。
+        var isEstimate: Bool
+    }
+
+    /// 保护静态状态 `lastCpuTicks` 的锁。
+    /// 用 `NSRecursiveLock`（而非 `NSLock`）以容忍同类型内的嵌套调用；目标 macOS 12，
+    /// 不使用 macOS 13+ 的 `OSAllocatedUnfairLock`。
+    private static let lock = NSRecursiveLock()
+
+    /// 返回整机功率读数（瓦特 + 是否估算）。
+    /// - 分支 1（SMC 直读）与分支 2（root helper 写入的真实值）均为**实测**；
+    /// - 分支 3 为**估算**（`isEstimate = true`）。
+    static func watts(tdp: Double, usage: Double? = nil) -> Reading {
         let real = SMCReader.systemWatts()
-        if real > 0 { return real }
+        if real > 0 { return Reading(watts: real, isEstimate: false) }
 
         let helper = readHelperPower()
-        if helper > 0 { return helper }
+        if helper > 0 { return Reading(watts: helper, isEstimate: false) }
 
         let u = max(0, min(1, usage ?? cpuUsage()))
-        let cpuPower = tdp * (0.05 + 0.95 * u)
-        let platformPower = 7 + 3 * u
-        return cpuPower + platformPower
+        let cpuPower = tdp * (Estimate.cpuIdleFactor + Estimate.cpuLoadFactor * u)
+        let platformPower = Estimate.platformBase + Estimate.platformLoad * u
+        return Reading(watts: cpuPower + platformPower, isEstimate: true)
+    }
+
+    /// 估算公式的具名常量（此前是散落的魔数）。
+    /// 抽出来便于以后按机型分档微调；不引入配置文件。
+    private enum Estimate {
+        /// CPU 功耗曲线的下界系数：空闲时 CPU 功耗占 TDP 的比例。
+        static let cpuIdleFactor = 0.05
+        /// CPU 功耗曲线的斜率：满载时 CPU 功耗占 TDP 的比例。
+        static let cpuLoadFactor = 0.95
+        /// 平台基础功耗（CPU 之外的常驻部分，W）。
+        static let platformBase = 7.0
+        /// 平台功耗随负载增长的部分（W）。
+        static let platformLoad = 3.0
     }
 
     /// 当前内存使用率（0...1）。用 host_statistics64 读取活动/有线/压缩页数，除以物理内存总量。
@@ -58,6 +87,13 @@ enum SystemPower {
     private static var lastCpuTicks: CpuTicks?
 
     static func cpuUsage() -> Double {
+        // 保护静态状态 `lastCpuTicks` 的「读—改—写」：本函数会被后台采样线程与
+        // 主线程（首拍 / 电源事件 / 设置变更刷新）并发调用，需要对增量基线做串行化。
+        // 函数体内不调用其他被锁类型、也无子进程，整体持锁安全。
+        // 注意：`watts()` 不持锁，故此处不会与 SMCReader.lock 形成嵌套。
+        lock.lock()
+        defer { lock.unlock() }
+
         guard let now = loadCpuTicks() else { return 0 }
         guard let previous = lastCpuTicks else {
             lastCpuTicks = now

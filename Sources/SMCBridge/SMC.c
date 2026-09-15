@@ -1,7 +1,30 @@
 // Minimal AppleSMC client (from the reference MacMonitor implementation).
 // Uses the exact C struct layout so the 80-byte protocol frame is correct.
 #include "SMC.h"
+#include <stddef.h>
 #include <string.h>
+
+// 整机功率候选键的唯一定义处（SMC.swift 与 MacBatteryHelper/main.swift 均从
+// SMCPowerKeyCount() / SMCPowerKey() 读取本表）。顺序即探测优先级：
+// 逐个尝试，取首个读到非零值的键。
+static const char *const kSMCPowerKeys[] = {
+    "PSTR",  // System total power (W)
+    "PDTR",  // 一些固件的总功耗
+    "PCHC",  // Chip/package power
+    "PSYS",  // 部分固件
+    "PWRS",
+};
+
+int SMCPowerKeyCount(void) {
+  return (int)(sizeof(kSMCPowerKeys) / sizeof(kSMCPowerKeys[0]));
+}
+
+const char *SMCPowerKey(int index) {
+  if (index < 0 || index >= SMCPowerKeyCount()) {
+    return NULL;
+  }
+  return kSMCPowerKeys[index];
+}
 
 io_connect_t SMCOpen(void) {
   kern_return_t result;

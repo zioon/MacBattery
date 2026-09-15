@@ -3,8 +3,8 @@ import Combine
 import IOKit.ps
 
 /// 后台采样器：一次完整采样电量 / 充电功率 / CPU / 内存 / 整机功率。
-/// 所有读取均为 nonisolated，且只被后台串行采样队列调用，
-/// 因此 BatteryReader / SMCReader 的静态缓存无需额外加锁。
+/// 所有读取均为 nonisolated；BatteryReader / SMCReader / SystemPower 的静态缓存
+/// 由各自类型内部的 `NSRecursiveLock` 保护，可安全地在后台采样队列与主线程间共享。
 enum Sampler {
 
     /// 单次采样的完整结果。
@@ -17,6 +17,8 @@ enum Sampler {
         var cpuUsage = 0.0
         var memoryUsage = 0.0
         var systemWatts = 0.0
+        /// 整机功率是否为估算值（true = 估算回退，UI 以 `~` 前缀区分）。仅用于实时 UI，不入 CSV。
+        var systemWattsIsEstimate = false
     }
 
     static func sample(tdp: Double) -> Frame {
@@ -33,7 +35,9 @@ enum Sampler {
         let u = SystemPower.cpuUsage()
         f.cpuUsage = u
         f.memoryUsage = SystemPower.memoryUsage()
-        f.systemWatts = SystemPower.watts(tdp: tdp, usage: u)
+        let reading = SystemPower.watts(tdp: tdp, usage: u)
+        f.systemWatts = reading.watts
+        f.systemWattsIsEstimate = reading.isEstimate
         return f
     }
 }
@@ -48,6 +52,8 @@ final class PowerMonitor: ObservableObject {
     @Published var batteryPercent: Int = 0
     /// 整机功率（瓦特）
     @Published var systemWatts: Double = 0
+    /// 当前的整机功率是否为估算值（true = 估算回退，UI 以 `~` 前缀标注）。仅用于实时 UI。
+    @Published var systemWattsIsEstimate: Bool = false
     /// 当前充电功率（瓦特）
     @Published var chargingWatts: Double = 0
     /// 充电电压（伏特，仅供展示）
@@ -64,8 +70,9 @@ final class PowerMonitor: ObservableObject {
     private let settings: SettingsStore
     /// 采样日志：每次采样完成后追加一条，供历史图表使用。
     private let logger: PowerLogger
-    /// 后台串行采样队列：串行保证 Battery / SMC 静态缓存访问安全。
-    /// 采样心跳也挂在此队列上，脱离主 RunLoop，避免系统对主线程低频 timer 的合并/节流。
+    /// 后台串行采样队列：让采样脱离主 RunLoop 执行。
+    /// 注意：主线程也存在硬件读取入口（首拍 / 电源事件补采样 / 健康日志），
+    /// Battery / SMC / SystemPower 的静态缓存由各自内部的锁保护，而非依赖本队列串行。
     private let sampleQueue = DispatchQueue(label: "MacBattery.sample", qos: .utility)
     /// 后台精确采样定时器（0.5s），独立于主线程触发。
     private var sampleSource: DispatchSourceTimer?
@@ -143,6 +150,7 @@ final class PowerMonitor: ObservableObject {
         cpuUsage = frame.cpuUsage
         memoryUsage = frame.memoryUsage
         systemWatts = frame.systemWatts
+        systemWattsIsEstimate = frame.systemWattsIsEstimate
         // 记录一条样本到日志（供历史图表）。主线程追加，磁盘落盘由日志内部后台完成。
         logger.append(PowerSample(
             t: Date(),

@@ -36,7 +36,7 @@
 前置：安装 Xcode 或仅安装 Command Line Tools（自带 `swift`）。
 
 ```bash
-cd d:/Project/MacBattery
+cd <MacBattery 工程目录>
 swift run
 ```
 
@@ -73,6 +73,8 @@ swift build -c release --arch arm64   # 按你的架构调整
   `swift run` 直接运行裸二进制时回退到 `Updater.swift` 中的 `AppVersion.fallback`。
 - 安装：打开 DMG，把 `MacBattery.app` 拖入「应用程序」覆盖旧版本即可（应用不会自我替换，避免签名与权限风险）。
 
+> **首次打开提示**：当前发布的 App 只做 ad-hoc 签名（未使用 Apple 开发者证书）。首次双击运行可能被 Gatekeeper 拦截并提示"无法验证开发者"。此时请**右键点按 App 图标 →「打开」**，或前往「系统设置 → 隐私与安全性」点「仍要打开」即可放行。
+
 ---
 
 ## 数据来源与限制
@@ -83,14 +85,14 @@ swift build -c release --arch arm64   # 按你的架构调整
 | 充电功率 | AppleSmartBattery 电压 × 电流（充电时取电流绝对值） | 无需 root |
 | 电压 · 电流小字 | AppleSmartBattery | 无需 root |
 | CPU / 内存 | POSIX / 系统接口 | 无需 root |
-| 整机功率 | AppleSMC（候选功耗键自动探测） | 视机型/系统；读不到时显示 `--` |
+| 整机功率 | AppleSMC 直读 / root helper / 估算回退 | 视机型/系统；读不到时回退为估算值，UI 上以 `~` 前缀标注 |
 
 ### 关于整机功率
 
-macOS 没有读取"整机功耗"的官方公开 API。本实现通过 AppleSMC 探测一组候选键（`PSTR`、`PDTR`、`PCHC`、`PWRS`、`EDR0`）。
+macOS 没有读取"整机功耗"的官方公开 API。本实现通过 AppleSMC 探测一组候选键（`PSTR`、`PDTR`、`PCHC`、`PSYS`、`PWRS`，候选列表由 `Sources/SMCBridge/SMC.c` 唯一定义）。
 
 - **部分 Intel 机型 / 部分 macOS 版本**可以读到，此时显示真实瓦数；
-- 读不到（显示 `--`）属正常现象，与该机固件未暴露功耗键有关，**并非程序错误**。
+- 读不到时回退为经验公式估算值（默认 TDP 45W，可在设置里调整），**UI 上会以 `~` 前缀标注以示区分**，这属正常现象，与该机固件未暴露功耗键有关，**并非程序错误**。
 
 如需确定功耗，可临时用系统自带工具交叉验证（需管理员密码）：
 

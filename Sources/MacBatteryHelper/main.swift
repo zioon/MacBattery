@@ -16,8 +16,13 @@ signal(SIGINT) { _ in exit(0) }
 
 // 主循环
 while true {
-    let watts = readSystemPowerWatts()
-    writePower(watts)
+    // 每轮用一个 autoreleasepool 包住读写：writePower 里的 String.write(toFile:) 与
+    // withCString 会经 Foundation 产生自动释放对象。本进程以 launchd 守护常驻、
+    // 几乎不会重启，若无池则内存单调增长。sleep 放在池外，语义更直观。
+    autoreleasepool {
+        let watts = readSystemPowerWatts()
+        writePower(watts)
+    }
     sleep(interval)
 }
 
@@ -28,7 +33,10 @@ func readSystemPowerWatts() -> Double {
     guard conn != 0 else { return 0 }
     defer { SMCClose(conn) }
 
-    for key in ["PSTR", "PDTR", "PCHC", "PSYS", "PWRS"] {
+    // 候选键来自 SMCBridge 的唯一定义处（与 SMC.swift 同源，顺序即探测优先级）。
+    let count = SMCPowerKeyCount()
+    for i in 0..<count {
+        guard let key = SMCPowerKey(i) else { continue }
         let v = SMCGetFloatValue(conn, key)
         if v > 0, v.isFinite {
             return v

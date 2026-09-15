@@ -3,14 +3,22 @@ import IOKit
 import IOKit.ps
 
 /// 电池信息读取。全部采用 macOS 官方公开 API，无需 root 权限。
-/// 注册表读取仅在后台串行采样队列中调用，缓存的 service 句柄无需额外加锁。
+/// 注册表读取既可能来自后台串行采样队列，也可能来自主线程入口（电源事件补采样 / 健康日志），
+/// 因此静态缓存（service 句柄 / 事件时间 / pmset 缓存）统一由 `lock` 保护。
 enum BatteryReader {
 
+    /// 保护本类型静态状态的锁：`cachedService`、`lastEventRefTime`、`pmsetCache` / `pmsetCacheTime`。
+    /// 用 `NSRecursiveLock`（而非 `NSLock`）以容忍同类型内的嵌套调用；目标 macOS 12，
+    /// 不使用 macOS 13+ 的 `OSAllocatedUnfairLock`。**该锁绝不跨 `pmset` 子进程调用持有。**
+    private static let lock = NSRecursiveLock()
+
     /// 缓存的 AppleSmartBattery 服务句柄（0 表示尚未匹配）。复用避免高频反复匹配/释放。
+    /// 受 `lock` 保护。
     private static var cachedService: io_service_t = 0
 
     /// 最近一次电源事件（插拔）发生时间（ReferenceDate）。事件回调（主线程）写入，
-    /// 采样线程只读，值为 Double 竞态可忽略。事件后短暂以 IOPS 即时状态为准，加快断电感知。
+    /// 采样线程只读；读写均在 `lock` 临界区内（不再是"Double 竞态可忽略"）。
+    /// 事件后短暂以 IOPS 即时状态为准，加快断电感知。
     private static var lastEventRefTime: TimeInterval = 0
     /// 电源事件后以 IOPS 即时状态覆盖 pmset 的窗口（秒）。
     private static let eventImmediateWindow: TimeInterval = 2.5
@@ -18,6 +26,9 @@ enum BatteryReader {
     /// 由电源事件回调调用，记录一次插拔事件。之后 `chargingStatus()` 在短窗口内
     /// 优先读取 IOPS 即时状态（与系统菜单栏电池图标同步、无子进程无缓存）。
     static func markBatteryEvent() {
+        // 保护静态状态 `lastEventRefTime`：与 `chargingStatus()` 的读取互斥。
+        lock.lock()
+        defer { lock.unlock() }
         lastEventRefTime = Date().timeIntervalSinceReferenceDate
     }
 
@@ -42,12 +53,30 @@ enum BatteryReader {
     /// 通过 AppleSmartBattery 的 `Voltage`(mV) × `Amperage`(mA) 计算。
     /// `Amperage` 为负时表示电流正在充入电池，取绝对值即为充电功率。
     static func chargingStatus() -> (isCharging: Bool, watts: Double, voltage: Double, current: Double) {
-        let service = currentService()
-        guard service != 0, var props = readProperties(service) else { return (false, 0, 0, 0) }
+        var ampere = 0
+        var volt = 0
+        var chargingFlag = 0
+        var sinceEvent = TimeInterval.greatestFiniteMagnitude
+        var eventImmediate: Bool?
 
-        var ampere = intValue(props["Amperage"])
-        var volt = intValue(props["Voltage"])
-        var chargingFlag = intValue(props["IsCharging"])
+        // ── 加锁临界区（以 pmset 子进程调用为界，必须在其之前结束）──────────────
+        // 保护的静态状态：
+        //  · cachedService：取句柄 + 读属性 + 句柄失效时的 rebuildService（含 IOObjectRelease）
+        //    必须串行；否则休眠唤醒后句柄失效，与另一线程的读取重叠会 use-after-free。
+        //  · lastEventRefTime：与 markBatteryEvent() 的写入互斥。
+        //  · pmsetCache：事件分支里主动置 nil 以强制下次刷新，写入需与 pmsetBatteryStatus 同步。
+        // 临界区内无任何子进程调用（pmsetBatteryStatus 在锁外调用）。
+        lock.lock()
+
+        let service = currentService()
+        guard service != 0, var props = readProperties(service) else {
+            lock.unlock()
+            return (false, 0, 0, 0)
+        }
+
+        ampere = intValue(props["Amperage"])
+        volt = intValue(props["Voltage"])
+        chargingFlag = intValue(props["IsCharging"])
 
         // 三个关键属性都读不到 → 缓存的句柄可能因休眠失效，重建服务并重试一次。
         if ampere == 0 && volt == 0 && chargingFlag == 0 {
@@ -60,6 +89,17 @@ enum BatteryReader {
             }
         }
 
+        sinceEvent = Date().timeIntervalSinceReferenceDate - Self.lastEventRefTime
+        if sinceEvent < Self.eventImmediateWindow {
+            // ioPSIsCharging 只读 IOPS（无锁、无子进程），可在临界区内安全调用。
+            eventImmediate = Self.ioPSIsCharging()
+            // 仅当 IOPS 即时状态可用时才让 pmset 缓存失效（与下方分支判定保持一致）。
+            if eventImmediate != nil { Self.pmsetCache = nil }
+        }
+
+        lock.unlock()
+        // ── 结束临界区（此后才允许调用 pmset 子进程）──────────────────────────
+
         // Amperage(mA) 负=充入、正=放电；Voltage(mV)。
         // 充电状态判定：
         // - 插拔事件后的短窗口内：优先用 IOPS 即时状态（与系统菜单栏电池图标同步、
@@ -67,10 +107,8 @@ enum BatteryReader {
         // - 其余时间：以 `pmset -g batt` 为权威（charging = 含 "charging" 且不含
         //   "discharging"）；pmset 进程失败时退回 IOPS / IsCharging 标志 / 电流方向综合判定。
         let isCharging: Bool
-        let sinceEvent = Date().timeIntervalSinceReferenceDate - Self.lastEventRefTime
-        if sinceEvent < Self.eventImmediateWindow, let io = Self.ioPSIsCharging() {
+        if let io = eventImmediate {
             isCharging = io
-            Self.pmsetCache = nil
         } else if let pmset = Self.pmsetBatteryStatus() {
             isCharging = pmset.charging
         } else {
@@ -106,6 +144,11 @@ enum BatteryReader {
     /// 部分机型 AppleSmartBattery 的容量键可能有缺省（如 `DesignCapacity` 为 0），
     /// 因此只要「当前最大容量」可读就返回记录；健康度仅在设计容量可读时计算，否则记为 0。
     static func health() -> BatteryHealth? {
+        // 保护静态状态 `cachedService`：与 chargingStatus() 的句柄读取/重建互斥，
+        // 避免并发 use-after-free。函数内无子进程，可整体持锁。
+        lock.lock()
+        defer { lock.unlock() }
+
         let service = currentService()
         guard service != 0, let props = readProperties(service) else { return nil }
         // 当前最大容量：优先 AppleRawMaxCapacity，缺省时退回 MaxCapacity。
@@ -136,14 +179,23 @@ enum BatteryReader {
     /// - onAC      = 输出含 "AC Power"（插着电源）
     /// - charging  = 含 "charging" 且不含 "discharging"（正在充电）
     /// - charged   = 含 "charged" 或 "finishing charge"（已充满 / 收尾充电）
-    /// pmset 与系统菜单栏电池图标同源；2 秒内复用上次结果，避免每 0.5s 采样拉起进程。
-    /// 仅在后台串行采样队列调用，静态缓存无需加锁。进程启动失败时返回 nil。
+    /// pmset 与系统菜单栏电池图标同源；5 秒内复用上次结果，避免每 0.5s 采样拉起进程。
+    /// 本函数可被后台采样线程与主线程并发调用，缓存读写由 `lock` 保护；
+    /// **子进程部分不持锁** —— 极端情况下两个线程可能同时未命中缓存各拉起一次 pmset，
+    /// 这是良性的（最多多一个瞬时进程，解析结果一致），不影响正确性。进程启动失败时返回 nil。
     private static var pmsetCacheTime: TimeInterval = 0
     private static var pmsetCache: (onAC: Bool, charging: Bool, charged: Bool)?
 
     private static func pmsetBatteryStatus() -> (onAC: Bool, charging: Bool, charged: Bool)? {
         let now = Date().timeIntervalSinceReferenceDate
-        if let cached = pmsetCache, now - pmsetCacheTime < 2.0 { return cached }
+
+        // 缓存读取：短临界区（pmsetCache / pmsetCacheTime 由多个入口并发读写）。
+        lock.lock()
+        if let cached = pmsetCache, now - pmsetCacheTime < 5.0 {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
 
         let process = Process()
         let pipe = Pipe()
@@ -156,10 +208,21 @@ enum BatteryReader {
         } catch {
             return nil
         }
-        process.waitUntilExit()
 
-        guard let data = try? pipe.fileHandleForReading.readToEnd(),
-              let output = String(data: data, encoding: .utf8) else { return nil }
+        // 超时保护：约 1.5s 后若子进程仍在运行则终止它，
+        // 使下方的 readDataToEndOfFile() 因管道关闭而返回，避免永久卡死。
+        let timeout = DispatchWorkItem {
+            if process.isRunning { process.terminate() }
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1.5, execute: timeout)
+
+        // 先读管道再等退出：避免子进程输出超过管道缓冲（约 64KB）时双方互等。
+        // 顺序必须是：readDataToEndOfFile()（阻塞到 EOF）→ waitUntilExit()。
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        timeout.cancel()
+
+        guard let output = String(data: data, encoding: .utf8) else { return nil }
         let status = (
             onAC: output.contains("AC Power"),
             // 快充满时 macOS 输出 "finishing charge"（收尾涓流仍在充，菜单栏仍显示充电），
@@ -168,8 +231,12 @@ enum BatteryReader {
                         || output.contains("finishing charge"),
             charged: output.contains("charged") || output.contains("finishing charge")
         )
+
+        // 缓存写入：短临界区。
+        lock.lock()
         pmsetCache = status
         pmsetCacheTime = now
+        lock.unlock()
         return status
     }
 

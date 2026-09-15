@@ -61,4 +61,12 @@ kern_return_t SMCClose(io_connect_t conn);
 kern_return_t SMCReadKey(io_connect_t conn, const char *key, SMCKeyData_t *val);
 double SMCGetFloatValue(io_connect_t conn, const char *key);
 
+// 整机功率候选键的唯一定义处：SMC.swift 与 MacBatteryHelper/main.swift 均从此读取，
+// 避免同一列表在多处不一致。顺序即探测优先级（逐个尝试，取首个读到非零值的键）。
+// 用函数式接口暴露，免去 Swift 侧直接消费 C 数组指针的麻烦。
+// 返回候选键个数。
+int SMCPowerKeyCount(void);
+// 返回第 index 个候选键（以 NUL 结尾的只读字符串）；index 越界时返回 NULL。
+const char *SMCPowerKey(int index);
+
 #endif

@@ -43,6 +43,9 @@ struct SettingsView: View {
                 Text("把它调到接近你机型的额定功耗（如轻薄本 28W、标压 U 45W、H 系 60W+），整机功率会更贴近真实。")
                     .font(.caption2)
                     .foregroundColor(.secondary)
+                Text("挂件上整机功率数字带 `~` 前缀时表示那是估算值；安装 root helper 后可读到真实值（见 README）。")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
             }
 
             Divider()

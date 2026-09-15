@@ -164,10 +164,12 @@ struct PowerHUDView: View {
 
     // MARK: - 文本
 
+    /// 整机功率文本。估算值（`systemWattsIsEstimate`）时前置 `~` 以示区分（诚实性标注）；
+    /// 实测值（SMC 直读 / root helper）无前缀。仅当功率为 0（理论上极少见）时才显示 `--`。
     private var systemValueText: String {
-        monitor.systemWatts > 0
-            ? String(format: "%.1f", monitor.systemWatts)
-            : "--"
+        guard monitor.systemWatts > 0 else { return "--" }
+        let value = String(format: "%.1f", monitor.systemWatts)
+        return monitor.systemWattsIsEstimate ? "~" + value : value
     }
 
     private var chargeValueText: String {

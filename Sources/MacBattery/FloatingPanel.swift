@@ -17,6 +17,11 @@ final class FloatingPanelController: NSWindowController {
     private var settingsWindow: NSWindow?
     private var moveObserver: NSObjectProtocol?
 
+    /// 最近一次「程序化」移动（applySettings 定位）写入的窗口原点。仅主线程读写。
+    /// didMove 观察者据此识别并忽略由程序化定位触发的通知，避免把程序化移动误记为
+    /// 用户拖拽（否则 `hasCustom` 会被错误写回 true，导致角落锚定丢失）。
+    private var lastProgrammaticOrigin: NSPoint?
+
     /// 挂件在 scale=1 时的基础宽高（与 PowerHUDView 保持一致）。
     /// 可见底盘为 58×58，四周各留 6pt 透明余量供充电外发光扩散，避免被窗口边界裁切。
     private let baseWidth: CGFloat = 70
@@ -79,42 +84,46 @@ final class FloatingPanelController: NSWindowController {
         hosting.autoresizingMask = []
 
         panel.contentView = hosting
-        panel.setContentSize(NSSize(width: width, height: height))
 
         panel.ignoresMouseEvents = settings.passthrough
         panel.isMovableByWindowBackground = !settings.passthrough
 
-        positionPanel(panel)
+        let newSize = NSSize(width: width, height: height)
+        let newOrigin = computeOrigin(size: newSize) ?? panel.frame.origin
+        // 合并为单次 setFrame：同时设定尺寸与原点，消除"尺寸已变、原点未随"的中间态
+        // ——角落锚定的挂件会瞬间偏离角落，合并后该中间态不存在。
+        // 通知条数由不确定变为确定 1 条（旧实现先 setContentSize 再 setFrameOrigin 分两步）。
+        // 记录本次程序化原点，供 didMove 观察者据此忽略程序化移动。
+        lastProgrammaticOrigin = newOrigin
+        panel.setFrame(NSRect(origin: newOrigin, size: newSize), display: true)
     }
 
-    private func positionPanel(_ panel: NSPanel) {
-        guard let screen = NSScreen.main else { return }
+    /// 计算面板应在的窗口原点（无副作用，不触碰窗口）。无可用屏幕时返回 nil。
+    /// 算法与旧 `positionPanel` 完全一致：扣除四周 glowMargin 后可见底盘与屏幕边缘保持 20pt。
+    private func computeOrigin(size: NSSize) -> NSPoint? {
+        guard let screen = NSScreen.main else { return nil }
         let vis = screen.visibleFrame
-        let size = panel.frame.size
         // 面板四周含 glowMargin 的透明留白，扣除后可见底盘才与屏幕边缘保持 20pt。
         let scale = (SizePreset(rawValue: settings.sizeRaw) ?? .medium).scale
         let margin: CGFloat = 20 - glowMargin * scale
 
-        let origin: NSPoint
         if settings.hasCustom {
-            origin = NSPoint(x: settings.customX, y: settings.customY)
-        } else {
-            switch Corner(rawValue: settings.cornerRaw) ?? .topRight {
-            case .topRight:
-                origin = NSPoint(x: vis.maxX - size.width - margin,
-                                 y: vis.maxY - size.height - margin)
-            case .topLeft:
-                origin = NSPoint(x: vis.minX + margin,
-                                 y: vis.maxY - size.height - margin)
-            case .bottomRight:
-                origin = NSPoint(x: vis.maxX - size.width - margin,
-                                 y: vis.minY + margin)
-            case .bottomLeft:
-                origin = NSPoint(x: vis.minX + margin,
-                                 y: vis.minY + margin)
-            }
+            return NSPoint(x: settings.customX, y: settings.customY)
         }
-        panel.setFrameOrigin(origin)
+        switch Corner(rawValue: settings.cornerRaw) ?? .topRight {
+        case .topRight:
+            return NSPoint(x: vis.maxX - size.width - margin,
+                           y: vis.maxY - size.height - margin)
+        case .topLeft:
+            return NSPoint(x: vis.minX + margin,
+                           y: vis.maxY - size.height - margin)
+        case .bottomRight:
+            return NSPoint(x: vis.maxX - size.width - margin,
+                           y: vis.minY + margin)
+        case .bottomLeft:
+            return NSPoint(x: vis.minX + margin,
+                           y: vis.minY + margin)
+        }
     }
 
     private func observeWindowMove(_ panel: NSPanel) {
@@ -125,7 +134,21 @@ final class FloatingPanelController: NSWindowController {
         ) { [weak self] note in
             guard let w = note.object as? NSWindow else { return }
             Task { @MainActor [weak self] in
-                self?.settings.rememberDrag(x: w.frame.origin.x, y: w.frame.origin.y)
+                guard let self else { return }
+                let origin = w.frame.origin
+                // 「程序化移动」标记的消费策略：命中则忽略并**保留**，不命中才清除。
+                // 无论 AppKit 是否对程序化 setFrame 发出 didMove 通知，都不会产生错误行为 ——
+                //  · 若发了通知：命中标记（差值 ≤ 0.5pt）视为程序化移动，忽略不记录，且保留标记，
+                //    使一轮内多次程序化 setFrame 产生的多条通知都能被逐一正确忽略；
+                //  · 若没发通知：标记一直保留，直到用户首次真实拖拽（值不符）才被清除并正确记录。
+                if let expected = self.lastProgrammaticOrigin,
+                   abs(origin.x - expected.x) <= 0.5,
+                   abs(origin.y - expected.y) <= 0.5 {
+                    return // 由程序化定位引起：忽略本次通知，保留标记
+                }
+                // 不命中（含本就没有标记）→ 清除标记并按用户拖拽记录。
+                self.lastProgrammaticOrigin = nil
+                self.settings.rememberDrag(x: origin.x, y: origin.y)
             }
         }
     }
