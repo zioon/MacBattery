@@ -61,12 +61,12 @@ enum BatteryReader {
 
         // 电压/电流/功率与充电状态的关系：
         // - 电压/电流恒返回读数（mV/mA 转 V/A）；
-        // - 充电功率仅在「正在充电」时返回：pmset 判定为充电，或电流方向为负（物理充入）。
-        //   放电时（Amperage 为正）返回 0，避免断电后仍显示充电功率造成误导。
+        // - 充电功率严格跟随 isCharging：pmset 权威判定为充电时才有功率。
+        //   ampere<0 的电流方向兜底只在 pmset 不可用分支里已纳入 isCharging，
+        //   这里不再叠加，避免部分机型 Amperage 符号约定相反（放电也为负）被误当充电。
         let voltValue = Double(volt) / 1000.0
         let ampereAbs = Double(abs(ampere))
-        let chargingNow = isCharging || (ampere < 0 && volt > 0)
-        let watts = (volt > 0 && ampere != 0 && chargingNow)
+        let watts = (isCharging && volt > 0 && ampere != 0)
             ? ampereAbs * Double(volt) / 1_000_000.0
             : 0
         return (isCharging, watts, voltValue, ampereAbs / 1000.0)
