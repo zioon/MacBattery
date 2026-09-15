@@ -23,7 +23,8 @@ enum Sampler {
 
     static func sample(tdp: Double) -> Frame {
         // 护栏断言：硬件读取（IOKit / SMC / pmset）不得在主线程（U-01 第 3 步）。
-        // 任何未来的新入口一旦在主线程调用，开发期立刻崩溃而不是悄悄拖慢 UI。
+        // ⚠️ dispatchPrecondition 基于 precondition，**发布版（-O）同样会崩溃**
+        //（只有 -Ounchecked 才移除）。新增硬件读取入口前务必先确认它的调用队列。
         dispatchPrecondition(condition: .notOnQueue(.main))
 
         var f = Frame()

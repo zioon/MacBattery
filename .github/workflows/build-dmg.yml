@@ -24,15 +24,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # 默认 fetch-depth:1 不拉 tag，会让下方 `git describe --tags` 的回退分支失效。
+          fetch-depth: 0
 
       # 版本号单一来源：手动触发用输入值，tag push 用 tag 名，否则回退到最近的 tag。
       # 解析结果供后续的一致性校验与 Info.plist 写入使用。
       - name: Resolve release version
         id: version
+        env:
+          # 经环境变量中转，避免把用户输入直接插进 shell（命令注入面）。
+          INPUT_VERSION: ${{ github.event.inputs.version }}
         run: |
           set -e
-          if [ -n "${{ github.event.inputs.version }}" ]; then
-            VER="${{ github.event.inputs.version }}"
+          if [ -n "$INPUT_VERSION" ]; then
+            VER="$INPUT_VERSION"
           elif [ "${GITHUB_REF_NAME#v}" != "$GITHUB_REF_NAME" ]; then
             VER="${GITHUB_REF_NAME#v}"
           else
@@ -47,9 +53,12 @@ jobs:
 
       # 一致性校验：避免"改了代码版本号却忘了同步 / 忘了写 CHANGELOG"导致应用内自动更新错乱。
       - name: Check version consistency
+        env:
+          # 同样经环境变量中转，不在 shell 里展开 github 表达式。
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -e
-          VER="${{ steps.version.outputs.version }}"
+          VER="$RELEASE_VERSION"
           SRC="$(sed -n 's/.*static let fallback = "\([0-9A-Za-z.-]*\)".*/\1/p' Sources/MacBattery/Updater.swift | head -n1)"
           echo "AppVersion.fallback = $SRC ; release version = $VER"
           if [ "$SRC" != "$VER" ]; then
@@ -66,6 +75,8 @@ jobs:
         timeout-minutes: 30
 
       - name: Assemble .app bundle
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -e
           APP="dist/MacBattery.app"
@@ -88,7 +99,7 @@ jobs:
           # 用解析出的版本号覆盖 Info.plist，保证应用内自动更新能正确比对版本。
           # 无条件覆盖：workflow_dispatch 时 GITHUB_REF_NAME 是分支名（没有 v 前缀），
           # 旧的条件判断会整段跳过，导致版本号停在 base64 Info.plist 里硬编码的 1.0.0。
-          VER="${{ steps.version.outputs.version }}"
+          VER="$RELEASE_VERSION"
           /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VER" "$APP/Contents/Info.plist"
           /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VER" "$APP/Contents/Info.plist"
           echo "set bundle version to $VER"

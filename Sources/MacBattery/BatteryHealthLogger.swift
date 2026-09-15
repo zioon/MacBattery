@@ -96,13 +96,22 @@ final class BatteryHealthLogger: ObservableObject {
     /// 三个调用点（启动首拍 / 60s 定时器 / `recordNow()`）全在主线程，
     /// 其中 60s 那条会长期、反复地与 0.5s 功率采样队列重叠，因此读取必须移出主线程。
     private func sample(force: Bool = false) {
+        // 在主线程快照代际（`generation` 是 @MainActor 状态），带进后台、再带回主线程校验。
+        // `gen` 是 Int（值类型，Sendable），捕获进后台闭包安全。
+        let gen = generation
         readQueue.async { [weak self] in
-            // 护栏断言：硬件读取不得在主线程（U-01 第 3 步）。
+            // ⚠️ 护栏：dispatchPrecondition 基于 precondition，**发布版（-O）同样会崩溃**
+            //（只有 -Ounchecked 才移除）。新增硬件读取入口前务必先确认它的调用队列。
             dispatchPrecondition(condition: .notOnQueue(.main))
             guard let health = BatteryReader.health() else { return }
             let level = BatteryReader.level()
             Task { @MainActor [weak self] in
-                self?.applySample(health: health, level: level, force: force)
+                // 期间若发生重置（reset() 已把 generation +1），丢弃这次在途采样 ——
+                // 否则会把陈旧点 append 回内存，并在 clearDisk() 之后再次落盘
+                //（用户可见后果：清空后曲线立刻回潮一个点）。
+                // 校验必须在这里做：generation 是主线程状态。
+                guard let self, self.generation == gen else { return }
+                self.applySample(health: health, level: level, force: force)
             }
         }
     }
