@@ -8,6 +8,8 @@ struct BatteryHealthSample: Equatable {
     var designCapacity: Int
     var healthPercent: Double
     var cycleCount: Int
+    /// 采样时刻的电量百分比（0...100），用于计算实时容量曲线（最大容量 × 电量）。
+    var levelPercent: Int
 }
 
 /// 电池健康日志中枢：健康数据（最大容量 / 设计容量 / 健康度 / 循环次数）变化极慢，
@@ -88,7 +90,8 @@ final class BatteryHealthLogger: ObservableObject {
             maxCapacity: health.maxCapacity,
             designCapacity: health.designCapacity,
             healthPercent: health.healthPercent,
-            cycleCount: health.cycleCount
+            cycleCount: health.cycleCount,
+            levelPercent: BatteryReader.level()
         )
         if !force, let last = lastRecorded {
             // 1) 健康值发生任何变化 → 必须记录；
@@ -155,7 +158,7 @@ private final class BatteryHealthLogStore {
     private let ioQueue = DispatchQueue(label: "MacBattery.Health.io", qos: .utility)
     private var handle: FileHandle?
     private var headerWritten = false
-    private let header = "epoch,maxCapacity,designCapacity,healthPercent,cycleCount\n"
+    private let header = "epoch,maxCapacity,designCapacity,healthPercent,cycleCount,levelPercent\n"
 
     private var fileURL: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -207,7 +210,7 @@ private final class BatteryHealthLogStore {
 
     private func csvLine(_ s: BatteryHealthSample) -> String {
         "\(s.t.timeIntervalSince1970),\(s.maxCapacity),\(s.designCapacity),"
-            + "\(s.healthPercent),\(s.cycleCount)\n"
+            + "\(s.healthPercent),\(s.cycleCount),\(s.levelPercent)\n"
     }
 
     private func fileHandle() -> FileHandle? {
@@ -274,6 +277,7 @@ private final class BatteryHealthLogStore {
 
     private func parseCSVLine(_ line: Substring) -> BatteryHealthSample? {
         let parts = line.split(separator: ",", omittingEmptySubsequences: false)
+        // 兼容旧 5 列文件（无 levelPercent）：6 列及以上才读取，缺失记为 -1 表示未知。
         guard parts.count >= 5,
               let epochString = parts[0].split(separator: ".").first,
               let epoch = Double(epochString) else { return nil }
@@ -281,12 +285,14 @@ private final class BatteryHealthLogStore {
         if epoch < 946684800 {
             return nil
         }
+        let level = parts.count >= 6 ? (Int(parts[5]) ?? -1) : -1
         return BatteryHealthSample(
             t: Date(timeIntervalSince1970: epoch),
             maxCapacity: Int(parts[1]) ?? 0,
             designCapacity: Int(parts[2]) ?? 0,
             healthPercent: Double(parts[3]) ?? 0,
-            cycleCount: Int(parts[4]) ?? 0
+            cycleCount: Int(parts[4]) ?? 0,
+            levelPercent: level
         )
     }
 }

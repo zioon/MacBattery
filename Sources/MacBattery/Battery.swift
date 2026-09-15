@@ -9,6 +9,18 @@ enum BatteryReader {
     /// 缓存的 AppleSmartBattery 服务句柄（0 表示尚未匹配）。复用避免高频反复匹配/释放。
     private static var cachedService: io_service_t = 0
 
+    /// 最近一次电源事件（插拔）发生时间（ReferenceDate）。事件回调（主线程）写入，
+    /// 采样线程只读，值为 Double 竞态可忽略。事件后短暂以 IOPS 即时状态为准，加快断电感知。
+    private static var lastEventRefTime: TimeInterval = 0
+    /// 电源事件后以 IOPS 即时状态覆盖 pmset 的窗口（秒）。
+    private static let eventImmediateWindow: TimeInterval = 2.5
+
+    /// 由电源事件回调调用，记录一次插拔事件。之后 `chargingStatus()` 在短窗口内
+    /// 优先读取 IOPS 即时状态（与系统菜单栏电池图标同步、无子进程无缓存）。
+    static func markBatteryEvent() {
+        lastEventRefTime = Date().timeIntervalSinceReferenceDate
+    }
+
     /// 当前电量百分比（0...100）
     static func level() -> Int {
         guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue() else { return 0 }
@@ -49,11 +61,17 @@ enum BatteryReader {
         }
 
         // Amperage(mA) 负=充入、正=放电；Voltage(mV)。
-        // 充电状态判定与 MacMonitor 完全一致：以 `pmset -g batt` 为权威
-        // （charging = 含 "charging" 且不含 "discharging"，与系统菜单栏同源）。
-        // pmset 调用失败（进程无法启动）时退回 IOPS / IsCharging 标志 / 电流方向综合判定。
+        // 充电状态判定：
+        // - 插拔事件后的短窗口内：优先用 IOPS 即时状态（与系统菜单栏电池图标同步、
+        //   无子进程/无缓存，插拔立即反映），并让 pmset 缓存失效等待系统文本随之刷新；
+        // - 其余时间：以 `pmset -g batt` 为权威（charging = 含 "charging" 且不含
+        //   "discharging"）；pmset 进程失败时退回 IOPS / IsCharging 标志 / 电流方向综合判定。
         let isCharging: Bool
-        if let pmset = Self.pmsetBatteryStatus() {
+        let sinceEvent = Date().timeIntervalSinceReferenceDate - Self.lastEventRefTime
+        if sinceEvent < Self.eventImmediateWindow, let io = Self.ioPSIsCharging() {
+            isCharging = io
+            Self.pmsetCache = nil
+        } else if let pmset = Self.pmsetBatteryStatus() {
             isCharging = pmset.charging
         } else {
             isCharging = (Self.ioPSIsCharging() ?? (chargingFlag == 1)) || (ampere < 0 && volt > 0)
@@ -144,7 +162,10 @@ enum BatteryReader {
               let output = String(data: data, encoding: .utf8) else { return nil }
         let status = (
             onAC: output.contains("AC Power"),
-            charging: output.contains("charging") && !output.contains("discharging"),
+            // 快充满时 macOS 输出 "finishing charge"（收尾涓流仍在充，菜单栏仍显示充电），
+            // 该串不含独立词 "charging"，需单独计入充电；纯 "charged"（已充满）不算充电。
+            charging: (output.contains("charging") && !output.contains("discharging"))
+                        || output.contains("finishing charge"),
             charged: output.contains("charged") || output.contains("finishing charge")
         )
         pmsetCache = status

@@ -171,8 +171,9 @@ final class PowerMonitor: ObservableObject {
         powerSourceSource = source
     }
 
-    /// 电源事件回调 —— 立即采样（不必等下一个 tick）。
+    /// 电源事件回调 —— 标记插拔（让充电状态短暂走 IOPS 即时路径，加快断电感知）并立即采样。
     private func powerSourceChanged() {
+        BatteryReader.markBatteryEvent()
         scheduleSample()
     }
 }
