@@ -1,25 +1,8 @@
 import Foundation
 import AppKit
+import MacBatteryCore
 
-/// 位置预设：屏屏幕四角。
-enum Corner: Int, CaseIterable {
-    case topRight, topLeft, bottomRight, bottomLeft
-    var label: String {
-        switch self {
-        case .topRight: return "右上角"
-        case .topLeft: return "左上角"
-        case .bottomRight: return "右下角"
-        case .bottomLeft: return "左下角"
-        }
-    }
-}
-
-/// 尺寸预设：小 / 中 / 大（相对基础尺寸的缩放）。
-enum SizePreset: Int, CaseIterable {
-    case small, medium, large
-    var label: String { ["小", "中", "大"][rawValue] }
-    var scale: CGFloat { [0.8, 1.0, 1.3][rawValue] }
-}
+// Corner / SizePreset 已抽到 MacBatteryCore/PanelGeometry.swift（纯几何 + 可独立单测）。
 
 /// 应用设置：UserDefaults 持久化，UI 改动后调用 commit() 触发外部应用。
 @MainActor
@@ -64,15 +47,11 @@ final class SettingsStore: ObservableObject {
         onChange?()
     }
 
-    /// 记录一个自定义位置（拖拽结束后调用，不触发外层 re-layout）。
-    func saveCustomPosition(x: Double, y: Double) {
-        customX = x
-        customY = y
-        hasCustom = true
-        commit()
-    }
-
     /// 拖拽过程中持续记录窗口原点（只写 UserDefaults，不触发 onChange，避免拖拽被打断）。
+    /// ⚠️ 刻意**不调用** `commit()`：程序化定位（选四角 / 改尺寸）也会触发 `didMove`，
+    /// 若这里再触发 re-layout 会造成 U-04 修过的「位置预设被改写成自定义位置」回潮。
+    /// （原先还有一个会 `commit()` 的 `saveCustomPosition(x:y:)`，因全仓无调用点且
+    /// 一旦被接到 `didMove` 观察者上就会重新引入该缺陷，已删除。）
     func rememberDrag(x: Double, y: Double) {
         customX = x
         customY = y

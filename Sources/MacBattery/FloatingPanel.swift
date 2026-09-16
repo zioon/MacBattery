@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import MacBatteryCore
 
 /// 置顶、透明、鼠标穿透的小浮窗（NSPanel）。
 /// 负责创建挂件、管理设置、菜单栏入口与设置窗口。
@@ -21,6 +22,9 @@ final class FloatingPanelController: NSWindowController {
     /// didMove 观察者据此识别并忽略由程序化定位触发的通知，避免把程序化移动误记为
     /// 用户拖拽（否则 `hasCustom` 会被错误写回 true，导致角落锚定丢失）。
     private var lastProgrammaticOrigin: NSPoint?
+
+    /// 当前渲染 HUD 用的缩放档位。未变化时不重建视图树（见 applySettings 的说明）。
+    private var renderedScale: CGFloat?
 
     /// 挂件在 scale=1 时的基础宽高（与 PowerHUDView 保持一致）。
     /// 可见底盘为 58×58，四周各留 6pt 透明余量供充电外发光扩散，避免被窗口边界裁切。
@@ -80,6 +84,8 @@ final class FloatingPanelController: NSWindowController {
     /// **Ctrl+C 直杀进程会丢最多 1 秒样本。**
     @MainActor
     func shutdown() {
+        // 解绑设置回调：退出过程中设置若再变化，不应再触发 re-layout / 触发采样。
+        settings.onChange = nil
         monitor.stop()      // 内部会 logger.stop() → flushPending()
         healthLogger.stop()
         if let observer = moveObserver {
@@ -99,11 +105,17 @@ final class FloatingPanelController: NSWindowController {
         let width = baseWidth * scale
         let height = baseHeight * scale
 
-        let hosting = NSHostingView(rootView: PowerHUDView(monitor: monitor, scale: scale))
-        hosting.frame = NSRect(x: 0, y: 0, width: width, height: height)
-        hosting.autoresizingMask = []
-
-        panel.contentView = hosting
+        // 仅在尺寸档位变化时重建整棵 HUD 视图树：拖动 TDP 滑块会高频触发 commit，
+        // 而 TDP / 穿透开关都不参与 PowerHUDView 构造（参数只有 monitor + scale），
+        // 原先每次 commit 都重建一棵树纯属浪费；PowerHUDView 自己持有 @ObservedObject
+        // monitor，运行期数值更新由它驱动，与这里无关。
+        if renderedScale != scale {
+            renderedScale = scale
+            let hosting = NSHostingView(rootView: PowerHUDView(monitor: monitor, scale: scale))
+            hosting.frame = NSRect(x: 0, y: 0, width: width, height: height)
+            hosting.autoresizingMask = []
+            panel.contentView = hosting
+        }
 
         panel.ignoresMouseEvents = settings.passthrough
         panel.isMovableByWindowBackground = !settings.passthrough
@@ -119,31 +131,24 @@ final class FloatingPanelController: NSWindowController {
     }
 
     /// 计算面板应在的窗口原点（无副作用，不触碰窗口）。无可用屏幕时返回 nil。
-    /// 算法与旧 `positionPanel` 完全一致：扣除四周 glowMargin 后可见底盘与屏幕边缘保持 20pt。
+    /// 几何计算抽到 MacBatteryCore/PanelGeometry（纯函数，U-04 的回归护栏）；
+    /// 本方法只负责「取屏幕 + 处理无屏幕的回退」这一 AppKit 相关部分。
     private func computeOrigin(size: NSSize) -> NSPoint? {
         guard let screen = NSScreen.main else { return nil }
         let vis = screen.visibleFrame
         // 面板四周含 glowMargin 的透明留白，扣除后可见底盘才与屏幕边缘保持 20pt。
         let scale = (SizePreset(rawValue: settings.sizeRaw) ?? .medium).scale
-        let margin: CGFloat = 20 - glowMargin * scale
+        let margin = PanelGeometry.margin(glowMargin: glowMargin, scale: scale)
 
         if settings.hasCustom {
             return NSPoint(x: settings.customX, y: settings.customY)
         }
-        switch Corner(rawValue: settings.cornerRaw) ?? .topRight {
-        case .topRight:
-            return NSPoint(x: vis.maxX - size.width - margin,
-                           y: vis.maxY - size.height - margin)
-        case .topLeft:
-            return NSPoint(x: vis.minX + margin,
-                           y: vis.maxY - size.height - margin)
-        case .bottomRight:
-            return NSPoint(x: vis.maxX - size.width - margin,
-                           y: vis.minY + margin)
-        case .bottomLeft:
-            return NSPoint(x: vis.minX + margin,
-                           y: vis.minY + margin)
-        }
+        let corner = Corner(rawValue: settings.cornerRaw) ?? .topRight
+        // NSPoint / NSSize 在 macOS 上就是 CGPoint / CGSize 的别名，可直接传给纯几何层。
+        return PanelGeometry.origin(corner: corner,
+                                    visibleFrame: vis,
+                                    size: size,
+                                    margin: margin)
     }
 
     private func observeWindowMove(_ panel: NSPanel) {

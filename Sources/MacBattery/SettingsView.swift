@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import MacBatteryCore
 
 /// 设置面板：大小、位置、鼠标穿透、整机功率估算上限（TDP）、在线更新。
 struct SettingsView: View {

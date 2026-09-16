@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import MacBatteryCore
 
 /// 整机功率。优先级：
 ///  1) SMC 直读真实值（`PSTR` 等；无权限时可能读不到）
@@ -31,22 +32,8 @@ enum SystemPower {
         if helper > 0 { return Reading(watts: helper, isEstimate: false) }
 
         let u = max(0, min(1, usage ?? cpuUsage()))
-        let cpuPower = tdp * (Estimate.cpuIdleFactor + Estimate.cpuLoadFactor * u)
-        let platformPower = Estimate.platformBase + Estimate.platformLoad * u
-        return Reading(watts: cpuPower + platformPower, isEstimate: true)
-    }
-
-    /// 估算公式的具名常量（此前是散落的魔数）。
-    /// 抽出来便于以后按机型分档微调；不引入配置文件。
-    private enum Estimate {
-        /// CPU 功耗曲线的下界系数：空闲时 CPU 功耗占 TDP 的比例。
-        static let cpuIdleFactor = 0.05
-        /// CPU 功耗曲线的斜率：满载时 CPU 功耗占 TDP 的比例。
-        static let cpuLoadFactor = 0.95
-        /// 平台基础功耗（CPU 之外的常驻部分，W）。
-        static let platformBase = 7.0
-        /// 平台功耗随负载增长的部分（W）。
-        static let platformLoad = 3.0
+        // 估算公式抽到 MacBatteryCore/PowerEstimate（纯函数，可独立单测）。
+        return Reading(watts: PowerEstimate.watts(tdp: tdp, usage: u), isEstimate: true)
     }
 
     /// 当前内存使用率（0...1）。用 host_statistics64 读取活动/有线/压缩页数，除以物理内存总量。

@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import os
+import MacBatteryCore
 
 /// 一次采样记录的完整数据点（内存态）。
 struct PowerSample {
@@ -101,7 +102,7 @@ final class PowerLogger: ObservableObject {
                                                capacity: Self.memoryCapacity)
                 guard merged.count != self.samples.count
                         || merged.last?.t != self.samples.last?.t else { return }
-                self.objectWillChange.send()
+                // samples 是 @Published，赋值本身就会发 objectWillChange，无需手动再发一次。
                 self.samples = merged
             }
         }
@@ -238,15 +239,36 @@ private final class PowerLogStore {
         var offset = size
         var readSoFar = 0
         var leftover: Substring = ""
+        // 区分「读取失败」与「真的因文件过大被截断」：原先两者都落在同一条
+        // "文件过大" 警告里，把 IO 故障误报成了正常截断。
+        var readFailed = false
 
         while offset > 0 && result.count < limit && readSoFar < 48 << 20 {
             let len = min(chunk, offset)
             offset -= len
             readSoFar += len
-            guard let fh = try? FileHandle(forReadingFrom: url) else { break }
+            let fh: FileHandle
+            do {
+                fh = try FileHandle(forReadingFrom: url)
+            } catch {
+                Self.logger.error("打开 CSV 读句柄失败: \(url.path, privacy: .public), \(error.localizedDescription, privacy: .public)")
+                readFailed = true
+                break
+            }
             defer { try? fh.close() }
-            do { try fh.seek(toOffset: UInt64(offset)) } catch { break }
-            let data = (try? fh.read(upToCount: len)) ?? Data()
+            do { try fh.seek(toOffset: UInt64(offset)) } catch {
+                Self.logger.error("CSV 读定位失败: \(url.path, privacy: .public), \(error.localizedDescription, privacy: .public)")
+                readFailed = true
+                break
+            }
+            let data: Data
+            do {
+                data = try fh.read(upToCount: len) ?? Data()
+            } catch {
+                Self.logger.error("CSV 读取失败: \(url.path, privacy: .public), \(error.localizedDescription, privacy: .public)")
+                readFailed = true
+                break
+            }
             // 用 String(decoding:as:) 而非 String(data:encoding:)：后者在块边界落在
             // 多字节字符中间时返回 nil，会 break 掉**整段**历史（与 1.1.5/1.1.9 反复出现的
             // "曲线空白"同源）。前者永不失败，非法字节替换为 U+FFFD，最多影响该行
@@ -268,10 +290,11 @@ private final class PowerLogStore {
                 }
             }
         }
-        // 因读取字节上限而提前结束（而非读完全部或凑够 limit）：历史文件过大，
-        // 更早的数据被截断。此前静默发生，现在留下痕迹。
-        if offset > 0 && result.count < limit {
-            Self.logger.warning("历史文件过大，回填被截断: 剩余 \(offset, privacy: .public) 字节未读")
+        // 读取失败 与 真正因 48MB 字节上限被截断，分别留下不同的痕迹。
+        if readFailed {
+            Self.logger.warning("历史回填因读取失败提前结束，本次回填可能不完整")
+        } else if readSoFar >= 48 << 20 && offset > 0 {
+            Self.logger.warning("历史文件过大（超过 48MB），回填被截断: 剩余 \(offset, privacy: .public) 字节未读")
         }
         // 过滤表头并升序。
         result = result.filter { $0.t != .distantPast }

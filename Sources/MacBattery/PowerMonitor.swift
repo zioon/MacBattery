@@ -83,7 +83,7 @@ final class PowerMonitor: ObservableObject {
     private var sampleSource: DispatchSourceTimer?
     /// IOKit 电源事件通知源（插拔 / 充满 / 功率切换时触发）。
     private var powerSourceSource: CFRunLoopSource?
-    /// TDP 的跨线程缓存：主线程写入，后台采样读取（值为 Double，竞争可忽略）。
+    /// TDP 的跨线程缓存：主线程写入，后台采样读取（NSLock 保护，非裸变量）。
     private let tdpBox = TDPBox()
 
     /// 采样间隔（秒）。
@@ -109,11 +109,6 @@ final class PowerMonitor: ObservableObject {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), source, CFRunLoopMode.commonModes)
             powerSourceSource = nil
         }
-    }
-
-    /// 供顶层独立刷新（例如设置里调整 TDP 后立即更新）。
-    func refreshOnce() {
-        scheduleSample()
     }
 
     /// 在后台串行队列上启动精确的采样心跳。
@@ -143,7 +138,7 @@ final class PowerMonitor: ObservableObject {
         Task { @MainActor [weak self] in
             guard let self else { return }
             // ⚠️ 这一行是 TDP 设置变更传播到采样线程的**唯一通道**，不要删：
-            // `refreshOnce()` 经 grep 确认全仓无调用点（死代码），
+            // 原先的 `refreshOnce()` 是无人调用的死代码、已删除，
             // 而 SettingsStore.onChange 只触发 applySettings()、不碰 TDP；
             // 删掉它，用户在设置里拖 TDP 滑块将永远不生效。
             // 每次主线程收尾时刷新 TDP 缓存，让设置变更在下一拍生效。

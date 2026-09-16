@@ -16,7 +16,20 @@ permissions:
   contents: write
 
 jobs:
+  # 纯逻辑层单测（U-09）：发布前的回归护栏。构建与发版都依赖本 job 通过。
+  test:
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: swift test
+        run: swift test
+        timeout-minutes: 20
+
   build-and-release:
+    needs: test
     # macOS-14 (arm64) hosted runner is free on public repos.
     # Build a universal binary (arm64 + x86_64) so it runs on both
     # Apple Silicon and Intel Macs.

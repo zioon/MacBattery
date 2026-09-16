@@ -847,67 +847,6 @@ private struct ChartDraw {
     }
 }
 
-// MARK: - 滚轮捕获（NSView 桥接）
-
-/// 捕获滚动 + 鼠标悬停事件并回调给 SwiftUI。
-/// dx/dy 为带符号滚动位移，option 表示是否按住 Option；onHover 回传鼠标位置（nil 表示离开）。
-struct ScrollWheelCatcher: NSViewRepresentable {
-    var onScroll: (Double, Double, Bool) -> Void
-    var onHover: (CGPoint?) -> Void
-
-    func makeNSView(context: Context) -> ScrollCatcherView {
-        let v = ScrollCatcherView()
-        v.onScroll = onScroll
-        v.onHover = onHover
-        v.allowedTouchTypes = [.direct, .indirect]
-        return v
-    }
-
-    func updateNSView(_ nsView: ScrollCatcherView, context: Context) {
-        nsView.onScroll = onScroll
-        nsView.onHover = onHover
-    }
-}
-
-final class ScrollCatcherView: NSView {
-    var onScroll: ((Double, Double, Bool) -> Void)?
-    var onHover: ((CGPoint?) -> Void)?
-    private var tracking: NSTrackingArea?
-
-    override func scrollWheel(with event: NSEvent) {
-        let dx = event.scrollingDeltaX
-        let dy = event.scrollingDeltaY
-        let option = event.modifierFlags.contains(.option)
-        if dx != 0 || dy != 0 {
-            onScroll?(dx, dy, option)
-        }
-        // 已消费，不冒泡。
-    }
-
-    // MARK: 悬停跟踪
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let tracking { removeTrackingArea(tracking) }
-        let area = NSTrackingArea(
-            rect: .zero,
-            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(area)
-        tracking = area
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        onHover?(convert(event.locationInWindow, from: nil))
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        onHover?(nil)
-    }
-}
-
 // MARK: - 刻度步长（文件级共享）
 
 /// 单调的 1-2-5 刻度步长：span 增大时步长只增不减，保证轴范围与刻度对齐、稳定。
