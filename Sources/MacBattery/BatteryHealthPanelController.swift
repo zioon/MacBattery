@@ -35,6 +35,13 @@ final class BatteryHealthPanelController: NSWindowController {
 
         let controller = BatteryHealthPanelController(window: panel)
         controller.shouldCascadeWindows = true
+
+        // 窗口关闭时退出「加密采样」模式（回到常驻 60s），避免无人查看时白白读取。
+        // 面板常驻复用（isReleasedWhenClosed = false），观察者只在首次创建时注册一次。
+        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
+                                               object: panel, queue: .main) { _ in
+            Task { @MainActor in healthLogger.setWindowVisible(false) }
+        }
         return controller
     }
 

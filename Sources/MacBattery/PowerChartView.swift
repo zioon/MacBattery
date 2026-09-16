@@ -123,28 +123,39 @@ struct PowerChartView: View {
 
     private var legend: some View {
         HStack(spacing: 12) {
-            legendToggle("电池%", $showBattery, batteryColor)
-            legendToggle("整机 W", $showSystemW, systemColor)
-            legendToggle("充电 W", $showChargingW, chargeColor)
-            legendToggle("CPU%", $showCpu, cpuColor)
-            legendToggle("RAM%", $showRam, ramColor)
-            legendToggle("电压 V", $showVoltage, voltageColor)
-            legendToggle("电流 A", $showCurrent, currentColor)
+            legendToggle("电池%", $showBattery, batteryColor, value: { Double($0.batteryPercent) })
+            legendToggle("整机 W", $showSystemW, systemColor, value: { $0.systemWatts })
+            legendToggle("充电 W", $showChargingW, chargeColor, value: { $0.chargingWatts })
+            legendToggle("CPU%", $showCpu, cpuColor, value: { $0.cpuUsage * 100 })
+            legendToggle("RAM%", $showRam, ramColor, value: { $0.memoryUsage * 100 })
+            legendToggle("电压 V", $showVoltage, voltageColor, value: { $0.chargingVoltage })
+            legendToggle("电流 A", $showCurrent, currentColor, value: { $0.chargingCurrent })
             Spacer()
         }
         .font(.caption)
     }
 
-    private func legendToggle(_ title: String, _ binding: Binding<Bool>, _ color: Color) -> some View {
+    private func legendToggle(_ title: String, _ binding: Binding<Bool>, _ color: Color,
+                              value: @escaping (PowerSample) -> Double) -> some View {
         Button {
             binding.wrappedValue.toggle()
         } label: {
             HStack(spacing: 4) {
                 Circle().fill(color).frame(width: 8, height: 8)
                 Text(title).foregroundColor(binding.wrappedValue ? .primary : .secondary)
+                // 当前值：取最新样本，随 0.5s 采样实时刷新；隐藏系列时随名称一起变淡。
+                Text(currentValueText(value))
+                    .foregroundColor(binding.wrappedValue ? .primary : .secondary)
+                    .fontWeight(.semibold)
             }
         }
         .buttonStyle(.plain)
+    }
+
+    /// 最新样本经映射后的展示文本（与悬浮提示同款 `fmtVal`）；无数据时显示 "--"。
+    private func currentValueText(_ value: @escaping (PowerSample) -> Double) -> String {
+        guard let s = logger.samples.last else { return "--" }
+        return fmtVal(value(s))
     }
 
     // 系列配色

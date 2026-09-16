@@ -273,8 +273,10 @@ final class FloatingPanelController: NSWindowController {
     }
 
     @objc private func openHealthChart() {
-        // 打开健康窗口时立即采样一次，保证当前值即刻可见并落盘。
+        // 打开健康窗口时立即采样一次，保证当前值即刻可见并落盘；
+        // 并切换到加密采样（5s），让图例数值在查看期间跟手（关闭后自动回到常驻 60s）。
         healthLogger.recordNow()
+        healthLogger.setWindowVisible(true)
         healthPanelController = BatteryHealthPanelController.makeIfNeeded(existing: healthPanelController,
                                                                           healthLogger: healthLogger)
         healthPanelController?.showWindow(nil)

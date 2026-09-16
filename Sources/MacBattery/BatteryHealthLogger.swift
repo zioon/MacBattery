@@ -24,8 +24,11 @@ final class BatteryHealthLogger: ObservableObject {
     /// 图表打开时从磁盘回填的历史点数量上限（一年内足够）。
     static let historyBackfill = 2000
 
-    /// 采样间隔：每 60s 尝试读取一次，未变化则不落盘。
+    /// 常驻采样间隔：每 60s 尝试读取一次，未变化则不落盘。
     static let sampleInterval: TimeInterval = 60
+    /// 健康窗口可见时的采样间隔：加密到 5s，让图例数值跟手。
+    /// 只影响**读取**频率；是否落盘仍由「值变化 / 基线间隔」门控，不会因此多写 CSV。
+    static let visibleSampleInterval: TimeInterval = 5
 
     /// 基线留档间隔：即使健康值未变化，每隔该时长也强制记录一条，避免长时间无历史点。
     static let baselineInterval: TimeInterval = 6 * 3600
@@ -42,6 +45,13 @@ final class BatteryHealthLogger: ObservableObject {
 
     private var timer: Timer?
 
+    /// 健康窗口是否可见（由打开 / 关闭路径设置）。
+    private var windowVisible = false
+    /// 当前生效的采样间隔：窗口可见时加密，常驻时维持低速。
+    private var activeSampleInterval: TimeInterval {
+        windowVisible ? Self.visibleSampleInterval : Self.sampleInterval
+    }
+
     /// 上一次成功写入的值；用于判断健康值是否发生变化。
     private var lastRecorded: BatteryHealthSample?
 
@@ -50,13 +60,10 @@ final class BatteryHealthLogger: ObservableObject {
 
     init() {}
 
-    /// 启动日志：先回填磁盘历史，再每 60s 采样一次（值变化才落盘）。
+    /// 启动日志：先回填磁盘历史，再按当前间隔采样（值变化才落盘）。
     func start() {
         backfillHistory()
-        timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: Self.sampleInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.sample() }
-        }
+        restartTimer()
         // 启动即强制采样一次：无论健康值是否变化都留档一条基线，
         // 使多次运行也能积累时间上分散的历史点（健康值长期不变时默认策略会一直跳过）。
         // 注意：`sample()` 现在是异步的（硬件读取在 readQueue 上），
@@ -67,6 +74,22 @@ final class BatteryHealthLogger: ObservableObject {
     func stop() {
         timer?.invalidate()
         timer = nil
+    }
+
+    /// 用当前生效的间隔重建采样定时器（常驻 60s；健康窗口可见时 5s）。
+    private func restartTimer() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: activeSampleInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.sample() }
+        }
+    }
+
+    /// 由健康窗口的打开 / 关闭路径调用：窗口可见期间加密采样，
+    /// 让图例数值及时跟上最新数据（落盘仍按「值变化 / 基线间隔」门控，不会多写 CSV）。
+    func setWindowVisible(_ visible: Bool) {
+        guard windowVisible != visible else { return }
+        windowVisible = visible
+        restartTimer()
     }
 
     /// 立即采样一次并强制落盘（供打开健康窗口等时机调用），保证每次打开都留档、曲线始终可见。
