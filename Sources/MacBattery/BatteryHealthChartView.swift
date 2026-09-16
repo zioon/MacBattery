@@ -29,14 +29,6 @@ struct BatteryHealthChartView: View {
     @GestureState private var dragBase: DragBase?
     private struct DragBase { let endTime: Date }
 
-    /// 实时容量（当前最大容量 × 当前电量百分比）。电量实时变化，定时刷新跟随。
-    @State private var liveCapacityText: String = "--"
-    /// 实时容量刷新定时器（跟随电量变化，健康历史仍按低频采样）。
-    private let liveTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
-
-    /// 实时容量标识色（与「当前最大容量」同色系）。
-    private static let liveCapacityColor = Color(red: 0.22, green: 0.80, blue: 0.45)
-
     private var minView: TimeInterval { 10 * 60 }
     private var maxView: TimeInterval { 365 * 86400 }
 
@@ -53,7 +45,7 @@ struct BatteryHealthChartView: View {
         let format: (Double) -> String
     }
 
-    /// 上图左轴（容量，mAh）：设计容量 + 当前最大容量 + 实时容量，共轴。
+    /// 上图左轴（容量，mAh）：设计容量 + 当前最大容量，共轴。
     private static let capacityMetrics: [HealthMetric] = [
         HealthMetric(title: "当前最大容量",
                      color: Color(red: 0.16, green: 0.85, blue: 0.62),
@@ -62,11 +54,6 @@ struct BatteryHealthChartView: View {
         HealthMetric(title: "设计容量",
                      color: Color(red: 0.30, green: 0.62, blue: 0.95),
                      value: { Double($0.designCapacity) },
-                     format: { "\(Int($0)) mAh" }),
-        HealthMetric(title: "实时容量",
-                     color: Color(red: 0.22, green: 0.80, blue: 0.45),
-                     // 电量未知（旧 5 列文件回填为 -1）时按 0 处理，避免负值破坏轴范围。
-                     value: { Double($0.maxCapacity) * Double(max(0, $0.levelPercent)) / 100.0 },
                      format: { "\(Int($0)) mAh" })
     ]
 
@@ -91,14 +78,14 @@ struct BatteryHealthChartView: View {
     }
 
     var body: some View {
-        // 布局与历史窗口一致：顶部指标条 → 中间图表 → 底部时间窗工具条。
-        VStack(spacing: 6) {
+        // 布局与历史窗口一致：顶部图例 → 中间图表 → 底部时间窗工具条。
+        VStack(spacing: 8) {
             header
             chartArea
             presetBar
         }
-        .padding(.top, 8)
-        .frame(minHeight: 240)
+        .padding(12)
+        .frame(minWidth: 640, minHeight: 340)
 
         // 实时跟随：来一条新样本就前推右缘。
         .onChange(of: healthLogger.samples.last?.t) { t in
@@ -108,45 +95,16 @@ struct BatteryHealthChartView: View {
         }
     }
 
-    // MARK: - 头部（指标当前值）
+    // MARK: - 头部（图例 + 各指标当前值，样式与历史图表一致）
 
     private var header: some View {
-        HStack(spacing: 10) {
-            Text("电池健康")
-                .font(.headline)
-                .foregroundColor(.primary)
-            // 顶部指标条：除「实时容量」外（由下方 liveCapacityChip 实时展示）。
-            ForEach(Array(Self.allMetrics.enumerated())
-                .filter { $0.element.title != "实时容量" }, id: \.offset) { _, m in
-                    legendChip(m)
+        HStack(spacing: 12) {
+            ForEach(Array(Self.allMetrics.enumerated()), id: \.offset) { _, m in
+                legendChip(m)
             }
-            liveCapacityChip
             Spacer()
         }
         .font(.caption)
-        .onReceive(liveTimer) { _ in refreshLiveCapacity() }
-    }
-
-    /// 实时容量芯片：当前最大容量 × 当前电量百分比。
-    private var liveCapacityChip: some View {
-        HStack(spacing: 4) {
-            Circle().fill(Self.liveCapacityColor).frame(width: 7, height: 7)
-            Text("实时容量")
-                .foregroundColor(.secondary)
-            Text(liveCapacityText)
-                .foregroundColor(.primary)
-                .fontWeight(.semibold)
-        }
-    }
-
-    /// 计算并刷新实时容量 = 当前最大容量 ×（电量百分比 / 100）。滚动时不会阻塞。
-    private func refreshLiveCapacity() {
-        guard let last = healthLogger.samples.last, last.maxCapacity > 0 else {
-            liveCapacityText = "--"
-            return
-        }
-        let level = BatteryReader.level()
-        liveCapacityText = "\(Int(Double(last.maxCapacity) * Double(level) / 100.0)) mAh"
     }
 
     // MARK: - 底部时间窗工具条（位置与历史图表一致，在图表下方）
@@ -157,6 +115,10 @@ struct BatteryHealthChartView: View {
                 .font(.caption2)
                 .foregroundColor(.secondary)
             Spacer(minLength: 0)
+            // 轴说明，与历史图表的「左轴：% · 右轴：W / V / A」对应。
+            Text("左轴：mAh  ·  右轴：%")
+                .font(.caption2)
+                .foregroundColor(.secondary)
             windowPresetButton("1d", Self.windowPresets[0])
             windowPresetButton("1w", Self.windowPresets[1])
             windowPresetButton("1m", Self.windowPresets[2])
@@ -164,7 +126,8 @@ struct BatteryHealthChartView: View {
             windowPresetButton("1y", Self.windowPresets[4])
             Button("全部") { fitToAll() }
                 .buttonStyle(.plain)
-                .font(.caption)
+                .font(.caption.weight(activeWindowPreset == nil ? .semibold : .regular))
+                .foregroundColor(activeWindowPreset == nil ? Color.accentColor : .primary)
             Button("重置数据") { confirmReset() }
                 .buttonStyle(.plain)
                 .font(.caption)
@@ -172,16 +135,9 @@ struct BatteryHealthChartView: View {
         }
     }
 
-    /// 底部信息：样本条数 + 已记录持续时长（与历史图表样式一致）。
+    /// 底部信息：样本条数 + 当前查看的时间窗（与历史图表一致）。
     private var summaryText: String {
-        let duration: TimeInterval
-        if let first = healthLogger.samples.first?.t,
-           let last = healthLogger.samples.last?.t {
-            duration = last.timeIntervalSince(first)
-        } else {
-            duration = 0
-        }
-        return "样本 \(healthLogger.samples.count) 个 · 已记录 " + timeText(duration)
+        "样本 \(healthLogger.samples.count) 个 · 查看最近 " + timeText(timeRange)
     }
 
     private func timeText(_ seconds: TimeInterval) -> String {
@@ -215,8 +171,8 @@ struct BatteryHealthChartView: View {
 
     private func legendChip(_ m: HealthMetric) -> some View {
         HStack(spacing: 4) {
-            Circle().fill(m.color).frame(width: 7, height: 7)
-            Text("\(m.title) ")
+            Circle().fill(m.color).frame(width: 8, height: 8)
+            Text(m.title)
                 .foregroundColor(.secondary)
             Text(currentValueText(m))
                 .foregroundColor(.primary)

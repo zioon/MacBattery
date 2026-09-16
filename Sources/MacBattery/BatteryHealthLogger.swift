@@ -9,8 +9,6 @@ struct BatteryHealthSample: Equatable {
     var designCapacity: Int
     var healthPercent: Double
     var cycleCount: Int
-    /// 采样时刻的电量百分比（0...100），用于计算实时容量曲线（最大容量 × 电量）。
-    var levelPercent: Int
 }
 
 /// 电池健康日志中枢：健康数据（最大容量 / 设计容量 / 健康度 / 循环次数）变化极慢，
@@ -104,14 +102,13 @@ final class BatteryHealthLogger: ObservableObject {
             //（只有 -Ounchecked 才移除）。新增硬件读取入口前务必先确认它的调用队列。
             dispatchPrecondition(condition: .notOnQueue(.main))
             guard let health = BatteryReader.health() else { return }
-            let level = BatteryReader.level()
             Task { @MainActor [weak self] in
                 // 期间若发生重置（reset() 已把 generation +1），丢弃这次在途采样 ——
                 // 否则会把陈旧点 append 回内存，并在 clearDisk() 之后再次落盘
                 //（用户可见后果：清空后曲线立刻回潮一个点）。
                 // 校验必须在这里做：generation 是主线程状态。
                 guard let self, self.generation == gen else { return }
-                self.applySample(health: health, level: level, force: force)
+                self.applySample(health: health, force: force)
             }
         }
     }
@@ -119,14 +116,13 @@ final class BatteryHealthLogger: ObservableObject {
     /// 在主线程应用一次健康采样结果：构造样本 → 判定是否落盘 → 追加。
     /// `BatteryReader.BatteryHealth` 是纯值 struct（仅 Int / Double 字段），跨线程传递安全。
     @MainActor
-    private func applySample(health: BatteryReader.BatteryHealth, level: Int, force: Bool) {
+    private func applySample(health: BatteryReader.BatteryHealth, force: Bool) {
         let now = BatteryHealthSample(
             t: Date(),
             maxCapacity: health.maxCapacity,
             designCapacity: health.designCapacity,
             healthPercent: health.healthPercent,
-            cycleCount: health.cycleCount,
-            levelPercent: level
+            cycleCount: health.cycleCount
         )
         if !force, let last = lastRecorded {
             // 1) 健康值发生任何变化 → 必须记录；
@@ -196,7 +192,7 @@ private final class BatteryHealthLogStore {
     private let ioQueue = DispatchQueue(label: "MacBattery.Health.io", qos: .utility)
     private var handle: FileHandle?
     private var headerWritten = false
-    private let header = "epoch,maxCapacity,designCapacity,healthPercent,cycleCount,levelPercent\n"
+    private let header = "epoch,maxCapacity,designCapacity,healthPercent,cycleCount\n"
 
     private var fileURL: URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -262,7 +258,7 @@ private final class BatteryHealthLogStore {
 
     private func csvLine(_ s: BatteryHealthSample) -> String {
         "\(s.t.timeIntervalSince1970),\(s.maxCapacity),\(s.designCapacity),"
-            + "\(s.healthPercent),\(s.cycleCount),\(s.levelPercent)\n"
+            + "\(s.healthPercent),\(s.cycleCount)\n"
     }
 
     private func fileHandle() -> FileHandle? {
@@ -348,7 +344,7 @@ private final class BatteryHealthLogStore {
 
     private func parseCSVLine(_ line: Substring) -> BatteryHealthSample? {
         let parts = line.split(separator: ",", omittingEmptySubsequences: false)
-        // 兼容旧 5 列文件（无 levelPercent）：6 列及以上才读取，缺失记为 -1 表示未知。
+        // 兼容旧 6 列文件（含已废弃的 levelPercent 列）：多余的第 6 列直接忽略。
         guard parts.count >= 5,
               let epochString = parts[0].split(separator: ".").first,
               let epoch = Double(epochString) else { return nil }
@@ -356,14 +352,12 @@ private final class BatteryHealthLogStore {
         if epoch < 946684800 {
             return nil
         }
-        let level = parts.count >= 6 ? (Int(parts[5]) ?? -1) : -1
         return BatteryHealthSample(
             t: Date(timeIntervalSince1970: epoch),
             maxCapacity: Int(parts[1]) ?? 0,
             designCapacity: Int(parts[2]) ?? 0,
             healthPercent: Double(parts[3]) ?? 0,
-            cycleCount: Int(parts[4]) ?? 0,
-            levelPercent: level
+            cycleCount: Int(parts[4]) ?? 0
         )
     }
 }
