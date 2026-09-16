@@ -37,24 +37,29 @@ public enum PanelGeometry {
 
     /// 给定角落、可见区域、窗口尺寸与外边距，计算窗口原点。
     ///
-    /// 纯计算：不触碰窗口、不读屏幕。调用方自行处理「无可用屏幕」的情况。
+    /// ⚠️ 纯逻辑层只依赖 Foundation：`CGRect.maxX / minY` 等便捷属性来自 AppKit，
+    /// 这里必须用 `origin + size` 手工推导，否则会破坏「Core 无 AppKit」的约定。
     public static func origin(corner: Corner,
                               visibleFrame: CGRect,
                               size: CGSize,
                               margin: CGFloat) -> CGPoint {
+        let minX = visibleFrame.origin.x
+        let minY = visibleFrame.origin.y
+        let maxX = minX + visibleFrame.size.width
+        let maxY = minY + visibleFrame.size.height
         switch corner {
         case .topRight:
-            return CGPoint(x: visibleFrame.maxX - size.width - margin,
-                           y: visibleFrame.maxY - size.height - margin)
+            return CGPoint(x: maxX - size.width - margin,
+                           y: maxY - size.height - margin)
         case .topLeft:
-            return CGPoint(x: visibleFrame.minX + margin,
-                           y: visibleFrame.maxY - size.height - margin)
+            return CGPoint(x: minX + margin,
+                           y: maxY - size.height - margin)
         case .bottomRight:
-            return CGPoint(x: visibleFrame.maxX - size.width - margin,
-                           y: visibleFrame.minY + margin)
+            return CGPoint(x: maxX - size.width - margin,
+                           y: minY + margin)
         case .bottomLeft:
-            return CGPoint(x: visibleFrame.minX + margin,
-                           y: visibleFrame.minY + margin)
+            return CGPoint(x: minX + margin,
+                           y: minY + margin)
         }
     }
 }
