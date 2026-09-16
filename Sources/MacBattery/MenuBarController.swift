@@ -1,4 +1,5 @@
 import AppKit
+import MacBatteryCore
 
 /// 菜单栏动作转发的目标（由 FloatingPanelController 实现）。
 @MainActor
