@@ -104,7 +104,8 @@ final class FloatingPanelController: NSWindowController {
     private func applySettings() {
         guard let panel = window as? NSPanel else { return }
 
-        let scale = (SizePreset(rawValue: settings.sizeRaw) ?? .medium).scale
+        let preset = SizePreset(rawValue: settings.sizeRaw) ?? .medium
+        let scale = CGFloat(preset.scale)
         let width = baseWidth * scale
         let height = baseHeight * scale
 
@@ -134,24 +135,28 @@ final class FloatingPanelController: NSWindowController {
     }
 
     /// 计算面板应在的窗口原点（无副作用，不触碰窗口）。无可用屏幕时返回 nil。
-    /// 几何计算抽到 MacBatteryCore/PanelGeometry（纯函数，U-04 的回归护栏）；
-    /// 本方法只负责「取屏幕 + 处理无屏幕的回退」这一 AppKit 相关部分。
+    /// 几何计算抽到 MacBatteryCore/PanelGeometry（纯 Double API，U-04 的回归护栏）；
+    /// 本方法只负责「取屏幕 + CG 类型互转 + 处理无屏幕的回退」。
     private func computeOrigin(size: NSSize) -> NSPoint? {
         guard let screen = NSScreen.main else { return nil }
         let vis = screen.visibleFrame
-        // 面板四周含 glowMargin 的透明留白，扣除后可见底盘才与屏幕边缘保持 20pt。
-        let scale = (SizePreset(rawValue: settings.sizeRaw) ?? .medium).scale
-        let margin = PanelGeometry.margin(glowMargin: glowMargin, scale: scale)
+        let preset = SizePreset(rawValue: settings.sizeRaw) ?? .medium
+        let margin = CGFloat(PanelGeometry.margin(glowMargin: Double(glowMargin),
+                                                  scale: preset.scale))
 
         if settings.hasCustom {
             return NSPoint(x: settings.customX, y: settings.customY)
         }
         let corner = Corner(rawValue: settings.cornerRaw) ?? .topRight
-        // NSPoint / NSSize 在 macOS 上就是 CGPoint / CGSize 的别名，可直接传给纯几何层。
-        return PanelGeometry.origin(corner: corner,
-                                    visibleFrame: vis,
-                                    size: size,
-                                    margin: margin)
+        let p = PanelGeometry.origin(corner: corner,
+                                     frameX: Double(vis.minX),
+                                     frameY: Double(vis.minY),
+                                     frameW: Double(vis.width),
+                                     frameH: Double(vis.height),
+                                     width: Double(size.width),
+                                     height: Double(size.height),
+                                     margin: Double(margin))
+        return NSPoint(x: p.x, y: p.y)
     }
 
     private func observeWindowMove(_ panel: NSPanel) {

@@ -5,24 +5,34 @@ import XCTest
 /// 四角 × scale{0.8, 1.0, 1.3} × margin 的组合矩阵在这里穷举，
 /// 改动定位算法不再依赖人工观察。
 ///
-/// 注意：可见区域故意用 origin=(0,0) 的矩形，期望值直接写数字 ——
-/// MacBatteryCore 只依赖 Foundation，测试也不使用 AppKit 的 CGRect 便捷属性。
+/// 可见区域故意用 origin=(0,0) 的矩形，期望值直接写数字 ——
+/// MacBatteryCore 只依赖 Foundation，测试同样不引入 CoreGraphics 类型。
 final class PanelGeometryTests: XCTestCase {
 
     // 可见区域：x ∈ [0, 1920]，y ∈ [0, 1080]。
-    private let frame = CGRect(x: 0, y: 0, width: 1920, height: 1080)
-    private let size = CGSize(width: 70, height: 70)
-    private let margin: CGFloat = 8
+    private let frameW: Double = 1920
+    private let frameH: Double = 1080
+    private let width: Double = 70
+    private let height: Double = 70
+    private let margin: Double = 8
+
+    private func origin(_ corner: Corner, m: Double) -> (x: Double, y: Double) {
+        PanelGeometry.origin(corner: corner,
+                             frameX: 0, frameY: 0,
+                             frameW: frameW, frameH: frameH,
+                             width: width, height: height,
+                             margin: m)
+    }
 
     func testAllFourCorners() {
-        XCTAssertEqual(PanelGeometry.origin(corner: .topRight, visibleFrame: frame, size: size, margin: margin),
-                       CGPoint(x: 1842, y: 1002))
-        XCTAssertEqual(PanelGeometry.origin(corner: .topLeft, visibleFrame: frame, size: size, margin: margin),
-                       CGPoint(x: 8, y: 1002))
-        XCTAssertEqual(PanelGeometry.origin(corner: .bottomRight, visibleFrame: frame, size: size, margin: margin),
-                       CGPoint(x: 1842, y: 8))
-        XCTAssertEqual(PanelGeometry.origin(corner: .bottomLeft, visibleFrame: frame, size: size, margin: margin),
-                       CGPoint(x: 8, y: 8))
+        XCTAssertEqual(origin(.topRight, m: margin).x, 1920 - 70 - 8, accuracy: 1e-9)
+        XCTAssertEqual(origin(.topRight, m: margin).y, 1080 - 70 - 8, accuracy: 1e-9)
+        XCTAssertEqual(origin(.topLeft, m: margin).x, 8, accuracy: 1e-9)
+        XCTAssertEqual(origin(.topLeft, m: margin).y, 1080 - 70 - 8, accuracy: 1e-9)
+        XCTAssertEqual(origin(.bottomRight, m: margin).x, 1920 - 70 - 8, accuracy: 1e-9)
+        XCTAssertEqual(origin(.bottomRight, m: margin).y, 8, accuracy: 1e-9)
+        XCTAssertEqual(origin(.bottomLeft, m: margin).x, 8, accuracy: 1e-9)
+        XCTAssertEqual(origin(.bottomLeft, m: margin).y, 8, accuracy: 1e-9)
     }
 
     func testMarginAcrossAllSizePresets() {
@@ -35,19 +45,22 @@ final class PanelGeometryTests: XCTestCase {
 
     func testNegativeMarginStillAnchors() {
         // margin 为负（外发光余量大于 20pt 的极端配置）时仍按公式锚定，不产生 NaN。
-        let o = PanelGeometry.origin(corner: .topRight, visibleFrame: frame, size: size, margin: -10)
-        XCTAssertEqual(o, CGPoint(x: 1920 - 70 + 10, y: 1080 - 70 + 10))
+        let o = origin(.topRight, m: -10)
+        XCTAssertEqual(o.x, 1920 - 70 + 10, accuracy: 1e-9)
+        XCTAssertEqual(o.y, 1080 - 70 + 10, accuracy: 1e-9)
     }
 
     func testLargestPresetStaysInsideVisibleFrame() {
         let m = PanelGeometry.margin(glowMargin: 6, scale: 1.3)
-        let side: CGFloat = 70 * 1.3
-        let o = PanelGeometry.origin(corner: .topRight, visibleFrame: frame,
-                                     size: CGSize(width: side, height: side), margin: m)
+        let side = 70 * 1.3
+        let o = PanelGeometry.origin(corner: .topRight,
+                                     frameX: 0, frameY: 0,
+                                     frameW: frameW, frameH: frameH,
+                                     width: side, height: side, margin: m)
         XCTAssertGreaterThanOrEqual(o.x, 0)
         XCTAssertGreaterThanOrEqual(o.y, 0)
-        XCTAssertLessThanOrEqual(o.x + side, 1920)
-        XCTAssertLessThanOrEqual(o.y + side, 1080)
+        XCTAssertLessThanOrEqual(o.x + side, frameW)
+        XCTAssertLessThanOrEqual(o.y + side, frameH)
     }
 
     func testOriginAnchorsToRightEdgeForAllCombinations() {
@@ -55,10 +68,12 @@ final class PanelGeometryTests: XCTestCase {
         for preset in SizePreset.allCases {
             let side = 70 * preset.scale
             let m = PanelGeometry.margin(glowMargin: 6, scale: preset.scale)
-            let o = PanelGeometry.origin(corner: .topRight, visibleFrame: frame,
-                                         size: CGSize(width: side, height: side), margin: m)
-            XCTAssertEqual(o.x + side, 1920 - m, accuracy: 1e-6)
-            XCTAssertEqual(o.y + side, 1080 - m, accuracy: 1e-6)
+            let o = PanelGeometry.origin(corner: .topRight,
+                                         frameX: 0, frameY: 0,
+                                         frameW: frameW, frameH: frameH,
+                                         width: side, height: side, margin: m)
+            XCTAssertEqual(o.x + side, frameW - m, accuracy: 1e-6)
+            XCTAssertEqual(o.y + side, frameH - m, accuracy: 1e-6)
         }
     }
 }
