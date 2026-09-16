@@ -141,10 +141,7 @@ struct BatteryHealthChartView: View {
     }
 
     private func timeText(_ seconds: TimeInterval) -> String {
-        if seconds < 60 { return "\(Int(seconds)) 秒" }
-        if seconds < 3600 { return "\(Int(seconds / 60)) 分钟" }
-        if seconds < 86400 { return String(format: "%.1f 小时", seconds / 3600) }
-        return String(format: "%.1f 天", seconds / 86400)
+        ChartAxes.timeText(seconds)
     }
 
     /// 当前命中的时间范围预设（未命中则返回 nil，视为「全部」选中）。
@@ -190,7 +187,7 @@ struct BatteryHealthChartView: View {
 
     private var chartArea: some View {
         GeometryReader { geo in
-            let plot = HealthPlot(outer: geo.size, left: 46, right: 44, top: 8, bottom: 26)
+            let plot = ChartPlot(outer: geo.size, left: 46, right: 44, top: 8, bottom: 26)
             let draw = buildDraw(plot)
             let hover = healthHoverInfo(hoverX: hoverPoint?.x, plot: plot)
 
@@ -219,7 +216,7 @@ struct BatteryHealthChartView: View {
         }
     }
 
-    private func buildDraw(_ plot: HealthPlot) -> HealthDraw {
+    private func buildDraw(_ plot: ChartPlot) -> HealthDraw {
         let startE = endTime.timeIntervalSince1970 - timeRange
         let endE = endTime.timeIntervalSince1970
         let samples = healthLogger.samples
@@ -290,67 +287,52 @@ struct BatteryHealthChartView: View {
     // MARK: - 悬停
 
     /// 由鼠标 x 坐标定位最近的健康样本，生成跨两个绘图区域的数值浮层所需数据。
-    private func healthHoverInfo(hoverX: CGFloat?, plot: HealthPlot) -> HealthHoverInfo? {
+    private func healthHoverInfo(hoverX: CGFloat?, plot: ChartPlot) -> ChartHoverInfo? {
         guard let hx = hoverX, hx >= plot.minX, hx <= plot.maxX else { return nil }
         let startE = endTime.timeIntervalSince1970 - timeRange
         let targetE = startE + Double(hx - plot.minX) / plot.plotW * timeRange
-        guard let s = nearestSample(upTo: targetE, in: healthLogger.samples) else { return nil }
+        guard let s = ChartInteraction.nearestSample(upTo: targetE, in: healthLogger.samples, timestamp: { $0.t }) else { return nil }
         let x = plot.minX + (s.t.timeIntervalSince1970 - startE) / timeRange * plot.plotW
         let rows = Self.allMetrics.map { m in
-            HealthHoverInfo.Row(color: m.color, title: m.title, value: m.format(m.value(s)))
+            ChartHoverInfo.Row(color: m.color, title: m.title, value: m.format(m.value(s)))
         }
-        return HealthHoverInfo(x: x, date: s.t, rows: rows)
+        return ChartHoverInfo(x: x, date: s.t, rows: rows)
     }
 
-    /// 序列中时间不超过 target 的最近一条（健康样本按时间升序）。
-    private func nearestSample(upTo target: Double, in arr: [BatteryHealthSample]) -> BatteryHealthSample? {
-        guard !arr.isEmpty else { return nil }
-        var lo = 0, hi = arr.count
-        while lo < hi {
-            let mid = (lo + hi) / 2
-            if arr[mid].t.timeIntervalSince1970 <= target { lo = mid + 1 } else { hi = mid }
-        }
-        let idx = lo - 1
-        return idx >= 0 ? arr[idx] : nil
-    }
+    /// 最近样本定位已抽到 Charting/ChartInteraction（历史图共用）。
 
     // MARK: - 交互
 
-    private func dragTranslation(_ tr: CGSize, plot: HealthPlot) {
+    private func dragTranslation(_ tr: CGSize, plot: ChartPlot) {
         guard let base = dragBase else { return }
         followLive = false
-        let ptsPerSec = plot.plotW / timeRange
-        if ptsPerSec > 0 {
-            endTime = clampEnd(base.endTime - tr.width / ptsPerSec)
+        if let delta = ChartInteraction.panSeconds(dx: tr.width, plotWidth: plot.plotW, timeRange: timeRange) {
+            endTime = clampEnd(base.endTime - delta)
         }
     }
 
-    private func handleScroll(dx: Double, dy: Double, option: Bool, plot: HealthPlot) {
+    private func handleScroll(dx: Double, dy: Double, option: Bool, plot: ChartPlot) {
         if option {
             // Option + 纵向滚动 → 缩放各 y 轴。
             if dy != 0 {
-                zoomY(by: bounded(exp(Double(-dy) * 0.015), 0.86, 1.16))
+                zoomY(by: ChartInteraction.axesZoomFactor(dy: dy))
                 autoY = false
             }
             return
         }
         if abs(dx) > 0 {
             followLive = false
-            let ptsPerSec = plot.plotW / timeRange
-            if ptsPerSec > 0 {
-                endTime = clampEnd(endTime - dx / ptsPerSec)
+            if let delta = ChartInteraction.panSeconds(dx: dx, plotWidth: plot.plotW, timeRange: timeRange) {
+                endTime = clampEnd(endTime - delta)
             }
         }
         if dy != 0 {
-            zoomTime(by: bounded(exp(Double(-dy) * 0.02), 0.84, 1.19))
+            zoomTime(by: ChartInteraction.timeZoomFactor(dy: dy))
         }
     }
 
     private func zoomTime(by factor: Double) {
-        var newRange = timeRange / factor
-        if newRange > maxView { newRange = maxView }
-        if newRange < minView { newRange = minView }
-        timeRange = newRange
+        timeRange = ChartInteraction.zoomedRange(timeRange, by: factor, minView: minView, maxView: maxView)
     }
 
     /// 以一个统一比例缩放所有行 y 轴（围绕各自中心）。
@@ -364,16 +346,8 @@ struct BatteryHealthChartView: View {
         }
     }
 
-    private func bounded(_ f: Double, _ lo: Double, _ hi: Double) -> Double {
-        min(max(f, lo), hi)
-    }
-
     private func clampEnd(_ d: Date) -> Date {
-        let now = Date().addingTimeInterval(12)
-        let earliest = healthLogger.samples.first?.t
-        if d > now { return now }
-        if let e = earliest, d < e.addingTimeInterval(20) { return e.addingTimeInterval(20) }
-        return d
+        ChartInteraction.clampedEnd(d, now: Date(), earliest: healthLogger.samples.first?.t)
     }
 
     private func fitToAll() {
@@ -409,50 +383,13 @@ struct BatteryHealthChartView: View {
     }
 }
 
-// MARK: - 悬停浮层数据
-
-private struct HealthHoverInfo {
-    let x: Double
-    let date: Date
-    let rows: [Row]
-
-    struct Row {
-        let color: Color
-        let title: String
-        let value: String
-    }
-}
-
-// MARK: - 绘图区域
-
-/// 绘图区域：上图（容量左轴 + 健康度右轴副坐标，占约 2/3 高度）+ 下图（循环次数，约 1/3）。
-private struct HealthPlot {
-    let outer: CGSize
-    let left, right, top, bottom: Double
-    var gap: Double { 8 }
-
-    var plotW: Double { max(10, outer.width - left - right) }
-    var plotH: Double { max(10, outer.height - top - bottom) }
-    var topRatio: Double { 0.62 }
-    var topH: Double { max(10, plotH * topRatio) }
-    var bottomH: Double { max(10, plotH - topH - gap) }
-    var minX: Double { left }
-    var maxX: Double { left + plotW }
-    /// 上图区域（容量 / 健康度）。
-    var topY: Double { top }
-    var topBottom: Double { top + topH }
-    /// 下图区域（循环次数）。
-    var bottomY: Double { top + topH + gap }
-    var bottomBottom: Double { top + plotH }
-}
-
 // MARK: - 实际绘图对象
 
 private struct HealthDraw {
     let visibleSamples: [BatteryHealthSample]
     let startE: Double
     let endE: Double
-    let plot: HealthPlot
+    let plot: ChartPlot
     let capacityMetrics: [BatteryHealthChartView.HealthMetric]
     let healthMetric: BatteryHealthChartView.HealthMetric
     let cycleMetric: BatteryHealthChartView.HealthMetric
@@ -462,7 +399,7 @@ private struct HealthDraw {
 
     private var span: Double { max(1e-9, endE - startE) }
 
-    func render(context: GraphicsContext, hover: HealthHoverInfo?) {
+    func render(context: GraphicsContext, hover: ChartHoverInfo?) {
         var clip = Path()
         clip.addRect(CGRect(x: plot.minX, y: plot.top, width: plot.plotW, height: plot.plotH))
         context.drawLayer { layer in
@@ -566,39 +503,11 @@ private struct HealthDraw {
     }
 
     /// 绘制悬停竖线（跨整个图表区）+ 时间与 4 项指标数值浮层。
-    private func drawHover(_ hover: HealthHoverInfo, in ctx: GraphicsContext) {
-        let x = CGFloat(hover.x)
-        guard x >= plot.minX, x <= plot.maxX else { return }
-
-        // 竖线跨全部两个区域。
-        var vp = Path()
-        vp.move(to: CGPoint(x: x, y: plot.top))
-        vp.addLine(to: CGPoint(x: x, y: plot.top + plot.plotH))
-        ctx.stroke(vp, with: .color(.white.opacity(0.5)), lineWidth: 1)
-
-        // 浮层放竖线偏向空白一侧。
-        let goRight = x < plot.minX + plot.plotW / 2
-        let anchor: UnitPoint = goRight ? .leading : .trailing
-        let bx = goRight ? x + 10 : x - 10
-
-        let formatter = DateFormatter()
-        let span = endE - startE
-        if span >= 86400 { formatter.dateFormat = "MM-dd HH:mm" }
-        else if span >= 3600 { formatter.dateFormat = "HH:mm" }
-        else { formatter.dateFormat = "HH:mm:ss" }
-        let timeText = Text(formatter.string(from: hover.date))
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundColor(.white)
-        ctx.draw(timeText, at: CGPoint(x: bx, y: plot.top + 8), anchor: anchor)
-
-        var yy = plot.top + 26
-        for row in hover.rows {
-            let line = Text("\(row.title)  \(row.value)")
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(row.color)
-            ctx.draw(line, at: CGPoint(x: bx, y: yy), anchor: anchor)
-            yy += 15
-        }
+    private func drawHover(_ hover: ChartHoverInfo, in ctx: GraphicsContext) {
+        // 竖线贯穿上 / 下两个分区；线宽与透明度保留健康图原有观感。
+        ChartHover.draw(hover, in: ctx, plot: plot,
+                        yTop: plot.topY, yBottom: plot.bottomBottom,
+                        span: span, lineOpacity: 0.5)
     }
 
     private func points(v: (BatteryHealthSample) -> Double, range: ClosedRange<Double>,
@@ -620,12 +529,7 @@ private struct HealthDraw {
     }
 
     private func stroke(_ pts: [CGPoint], color: Color, in layer: GraphicsContext) {
-        guard pts.count >= 2 else { return }
-        var path = Path()
-        path.move(to: pts[0])
-        for pt in pts.dropFirst() { path.addLine(to: pt) }
-        layer.stroke(path, with: .color(color.opacity(0.9)),
-                     style: StrokeStyle(lineWidth: 1.6, lineCap: .round, lineJoin: .round))
+        ChartDrawing.strokePoints(pts, color: color, in: layer)
     }
 
     private func timeX(_ epoch: Double) -> Double {
@@ -633,7 +537,7 @@ private struct HealthDraw {
     }
 
     private func timeTicks() -> [Double] {
-        let step = niceTimeStep(span)
+        let step = ChartAxes.niceTimeStep(span, minimumStep: 60)
         var out: [Double] = []
         var v = ceil(startE / step) * step
         while v <= endE + step {
@@ -641,14 +545,6 @@ private struct HealthDraw {
             v += step
         }
         return out
-    }
-
-    private func niceTimeStep(_ span: Double) -> Double {
-        let candidates: [Double] = [60, 120, 300, 600, 900, 1800,
-                                    3600, 7200, 14400, 21600, 36000, 43200, 86400]
-        let target = span / 6
-        for c in candidates where c >= target { return c }
-        return candidates.last ?? 86400
     }
 
     private static func xFormatter(for span: Double) -> DateFormatter {

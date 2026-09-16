@@ -24,6 +24,12 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Guard MacBatteryCore purity
+        run: |
+          if grep -rn "import AppKit\|import IOKit\|import SwiftUI" Sources/MacBatteryCore/; then
+            echo "::error::MacBatteryCore 必须保持纯逻辑层（禁止 import AppKit / IOKit / SwiftUI）"
+            exit 1
+          fi
       - name: swift test
         run: swift test
         timeout-minutes: 20

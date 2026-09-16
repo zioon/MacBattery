@@ -14,8 +14,10 @@ final class FloatingPanelController: NSWindowController {
     private var chartController: PowerChartPanelController?
     private var healthPanelController: BatteryHealthPanelController?
     private let updater = UpdateChecker()
-    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    private var settingsWindow: NSWindow?
+    /// 菜单栏（第四批拆出，见 MenuBarController）。
+    private var menuController: MenuBarController!
+    /// 设置窗口（第四批拆出，见 SettingsWindowController）。
+    private var settingsWindowController: SettingsWindowController?
     private var moveObserver: NSObjectProtocol?
 
     /// 最近一次「程序化」移动（applySettings 定位）写入的窗口原点。仅主线程读写。
@@ -51,7 +53,8 @@ final class FloatingPanelController: NSWindowController {
         healthLogger.start()
         settings.onChange = { [weak self] in self?.applySettings() }
 
-        buildStatusItem()
+        // 菜单栏：构建与勾选态在 MenuBarController，动作经 MenuBarDelegate 回到这里。
+        menuController = MenuBarController(settings: settings, delegate: self)
         applySettings()
         panel.makeKeyAndOrderFront(nil)
         observeWindowMove(panel)
@@ -178,97 +181,19 @@ final class FloatingPanelController: NSWindowController {
         }
     }
 
-    // MARK: - 菜单栏
+    // 菜单栏已拆到 MenuBarController（第四批），动作经 MenuBarDelegate 回到这里。
+}
 
-    private func buildStatusItem() {
-        statusItem.button?.image = NSImage(systemSymbolName: "bolt.circle.fill",
-                                           accessibilityDescription: "MacBattery")
+extension FloatingPanelController: MenuBarDelegate {
 
-        let menu = NSMenu()
-
-        let settingsItem = NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ",")
-        settingsItem.target = self
-        menu.addItem(settingsItem)
-
-        // 历史图表
-        let chartItem = NSMenuItem(title: "历史图表…", action: #selector(openChart), keyEquivalent: "g")
-        chartItem.target = self
-        menu.addItem(chartItem)
-
-        // 电池健康（独立窗口）
-        let healthItem = NSMenuItem(title: "电池健康…", action: #selector(openHealthChart), keyEquivalent: "h")
-        healthItem.target = self
-        menu.addItem(healthItem)
-
-        menu.addItem(.separator())
-
-        // 位置子菜单
-        let posItem = NSMenuItem()
-        posItem.title = "位置"
-        let posSub = NSMenu()
-        for c in Corner.allCases {
-            let it = NSMenuItem(title: c.label, action: #selector(chooseCorner(_:)), keyEquivalent: "")
-            it.tag = c.rawValue
-            it.target = self
-            it.state = (!settings.hasCustom && settings.cornerRaw == c.rawValue) ? .on : .off
-            posSub.addItem(it)
-        }
-        posItem.submenu = posSub
-        menu.addItem(posItem)
-
-        // 大小子菜单
-        let sizeItem = NSMenuItem()
-        sizeItem.title = "大小"
-        let sizeSub = NSMenu()
-        for p in SizePreset.allCases {
-            let it = NSMenuItem(title: p.label, action: #selector(chooseSize(_:)), keyEquivalent: "")
-            it.tag = p.rawValue
-            it.target = self
-            it.state = (settings.sizeRaw == p.rawValue) ? .on : .off
-            sizeSub.addItem(it)
-        }
-        sizeItem.submenu = sizeSub
-        menu.addItem(sizeItem)
-
-        // 鼠标穿透开关
-        let passthroughItem = NSMenuItem(title: "鼠标穿透", action: #selector(togglePassthrough(_:)), keyEquivalent: "")
-        passthroughItem.target = self
-        passthroughItem.state = settings.passthrough ? .on : .off
-        menu.addItem(passthroughItem)
-
-        menu.addItem(.separator())
-        let updateItem = NSMenuItem(title: "检查更新…", action: #selector(checkForUpdates), keyEquivalent: "")
-        updateItem.target = self
-        menu.addItem(updateItem)
-
-        menu.addItem(.separator())
-        let quitItem = NSMenuItem(title: "退出 MacBattery", action: #selector(quit), keyEquivalent: "q")
-        quitItem.target = self
-        menu.addItem(quitItem)
-
-        statusItem.menu = menu
+    func menuOpenSettings() {
+        settingsWindowController = SettingsWindowController.makeIfNeeded(existing: settingsWindowController,
+                                                                         store: settings,
+                                                                         updater: updater)
+        settingsWindowController?.showAndActivate()
     }
 
-    @objc private func openSettings() {
-        if settingsWindow == nil {
-            let hosting = NSHostingView(rootView: SettingsView(store: settings, updater: updater))
-            hosting.layout()
-            let height = max(420, hosting.fittingSize.height)
-            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 340, height: height),
-                               styleMask: [.titled, .closable],
-                               backing: .buffered,
-                               defer: false)
-            win.title = "MacBattery 设置"
-            win.contentView = hosting
-            win.isReleasedWhenClosed = false
-            settingsWindow = win
-        }
-        settingsWindow?.center()
-        settingsWindow?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
-    @objc private func openChart() {
+    func menuOpenChart() {
         chartController = PowerChartPanelController.makeIfNeeded(existing: chartController,
                                                                  logger: logger,
                                                                  healthLogger: healthLogger)
@@ -277,7 +202,7 @@ final class FloatingPanelController: NSWindowController {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    @objc private func openHealthChart() {
+    func menuOpenHealthChart() {
         // 打开健康窗口时立即采样一次，保证当前值即刻可见并落盘；
         // 并切换到加密采样（5s），让图例数值在查看期间跟手（关闭后自动回到常驻 60s）。
         healthLogger.recordNow()
@@ -289,36 +214,27 @@ final class FloatingPanelController: NSWindowController {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    @objc private func chooseCorner(_ sender: NSMenuItem) {
-        settings.cornerRaw = sender.tag
+    func menuChooseCorner(_ rawValue: Int) {
+        settings.cornerRaw = rawValue
         settings.hasCustom = false
         settings.commit()
-        rebuildMenuCheckmarks()
+        menuController.rebuild()
     }
 
-    @objc private func chooseSize(_ sender: NSMenuItem) {
-        settings.sizeRaw = sender.tag
+    func menuChooseSize(_ rawValue: Int) {
+        settings.sizeRaw = rawValue
         settings.commit()
-        rebuildMenuCheckmarks()
+        menuController.rebuild()
     }
 
-    @objc private func togglePassthrough(_ sender: NSMenuItem) {
+    func menuTogglePassthrough() {
         settings.passthrough.toggle()
         settings.commit()
-        sender.state = settings.passthrough ? .on : .off
-        rebuildMenuCheckmarks()
+        menuController.rebuild()
     }
 
-    @objc private func checkForUpdates() {
+    func menuCheckForUpdates() {
         updater.checkForUpdates(interactive: true)
-    }
-
-    @objc private func quit() {
-        NSApp.terminate(nil)
-    }
-
-    private func rebuildMenuCheckmarks() {
-        buildStatusItem()
     }
 }
 
