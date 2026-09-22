@@ -91,6 +91,7 @@ swift build -c release --arch arm64   # 按你的架构调整
 - 版本号取自 `.app` 的 `Info.plist` 的 `CFBundleShortVersionString`（发版时由 CI 用 tag 覆盖）；
   `swift run` 直接运行裸二进制时回退到 `Updater.swift` 中的 `AppVersion.fallback`。
 - 安装：打开 DMG，把 `MacBattery.app` 拖入「应用程序」覆盖旧版本即可（应用不会自我替换，避免签名与权限风险）。
+  DMG 根目录已放好一个指向 `/Applications` 的「应用程序」快捷方式，无需再手动开一个访达窗口。
 
 > **首次打开提示**：当前发布的 App 只做 ad-hoc 签名（未使用 Apple 开发者证书）。首次双击运行可能被 Gatekeeper 拦截并提示"无法验证开发者"。此时请**右键点按 App 图标 →「打开」**，或前往「系统设置 → 隐私与安全性」点「仍要打开」即可放行。
 

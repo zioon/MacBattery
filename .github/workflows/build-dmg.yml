@@ -195,13 +195,63 @@ jobs:
 
       - name: Create DMG
         run: |
+          set -e
           rm -f MacBattery.dmg
+          rm -rf dmg-root
+          mkdir -p dmg-root
+          # 平铺 dist/ 的内容作为 DMG 根目录。
+          # 注意：这里**刻意不放** /Applications 的软链 —— `hdiutil create -srcfolder`
+          # 是否原样保留源目录里的符号链接并无保证，万一它跟进了 /Applications，
+          # 就会把整台 runner 的「应用程序」目录塞进镜像。软链改在已挂载的读写镜像里创建。
+          cp -R dist/. dmg-root/
+          test -d dmg-root/MacBattery.app || { echo "::error::dmg-root 内缺少 MacBattery.app"; exit 1; }
+
+          RW_DMG="$RUNNER_TEMP/MacBattery.rw.dmg"
+          MNT="$RUNNER_TEMP/dmg-mnt"
+          rm -f "$RW_DMG"
+          rm -rf "$MNT"
+          mkdir -p "$MNT"
+
+          # ① 先出可读写镜像；② 挂载后写入指向 /Applications 的快捷方式（即用户在
+          # 访达里看到的「应用程序」文件夹图标）；③ 再转成压缩只读 DMG 分发。
           hdiutil create \
             -volname "MacBattery" \
-            -srcfolder dist \
+            -srcfolder dmg-root \
+            -fs HFS+ \
             -ov \
-            -format UDZO \
-            MacBattery.dmg
+            -format UDRW \
+            "$RW_DMG"
+          hdiutil attach "$RW_DMG" -nobrowse -mountpoint "$MNT"
+          ln -s /Applications "$MNT/Applications"
+          ls -la "$MNT"
+          hdiutil detach "$MNT"
+          hdiutil convert "$RW_DMG" -format UDZO -ov -o MacBattery.dmg
+          ls -lh MacBattery.dmg
+
+      - name: Verify DMG (Applications shortcut + payload)
+        run: |
+          set -e
+          MNT="$RUNNER_TEMP/dmg-verify"
+          rm -rf "$MNT"
+          mkdir -p "$MNT"
+          hdiutil attach MacBattery.dmg -nobrowse -readonly -mountpoint "$MNT"
+          # 校验结束务必卸载，否则后续步骤/清理可能因卷被占用而失败。
+          trap 'hdiutil detach "$MNT" >/dev/null 2>&1 || true' EXIT
+
+          ls -la "$MNT"
+          # 门禁 1：必须有指向 /Applications 的符号链接，用户才能把 .app 直接拖进「应用程序」。
+          test -L "$MNT/Applications" || { echo "::error::DMG 内缺少 Applications 快捷方式"; exit 1; }
+          LINK_TARGET="$(readlink "$MNT/Applications")"
+          test "$LINK_TARGET" = "/Applications" || {
+            echo "::error::Applications 快捷方式指向 $LINK_TARGET，应为 /Applications"; exit 1;
+          }
+          # 门禁 2：换了打包路径（srcfolder → 读写镜像转换），载荷落位不能被带偏。
+          test -d "$MNT/MacBattery.app" || { echo "::error::DMG 内缺少 MacBattery.app"; exit 1; }
+          test -f "$MNT/MacBattery.app/Contents/MacOS/MacBattery" || {
+            echo "::error::DMG 内的 MacBattery.app 缺少可执行文件"; exit 1;
+          }
+          test -f "$MNT/macbattery-helper" || { echo "::error::DMG 内缺少 macbattery-helper"; exit 1; }
+          echo "OK: DMG contains Applications -> /Applications"
 
       - name: Publish Release
         if: startsWith(github.ref, 'refs/tags/')
