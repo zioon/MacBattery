@@ -11,6 +11,9 @@ enum Sampler {
     struct Frame {
         var batteryPercent = 0
         var isCharging = false
+        /// 是否正在用电池供电（未接外电）。取自 IOPS 剩余时间估计：-2 表示接通电源。
+        var onBattery = false
+        /// 充电功率（瓦特）
         var chargingWatts = 0.0
         var chargingVoltage = 0.0
         var chargingCurrent = 0.0
@@ -19,6 +22,9 @@ enum Sampler {
         var systemWatts = 0.0
         /// 整机功率是否为估算值（true = 估算回退，UI 以 `~` 前缀区分）。仅用于实时 UI，不入 CSV。
         var systemWattsIsEstimate = false
+        /// 电池剩余时间估计（秒，与系统菜单栏同源）。
+        /// -1 = 系统仍在估算；-2 = 接通电源（不限）；其余 = 预计剩余秒数。仅用于实时 UI，不入 CSV。
+        var batteryTimeRemaining: Double = -1
     }
 
     static func sample(tdp: Double) -> Frame {
@@ -35,6 +41,12 @@ enum Sampler {
         f.chargingWatts = charging.watts
         f.chargingVoltage = charging.voltage
         f.chargingCurrent = charging.current
+
+        // 剩余时间估计：与系统菜单栏同源的 IOPS 官方估算（无子进程、无额外 IO）。
+        // -2 表示接通电源，据此同时判定「是否正在用电池供电」（含已充满但插着电的状态）。
+        let estimate = IOPSGetTimeRemainingEstimate()
+        f.batteryTimeRemaining = estimate
+        f.onBattery = estimate != -2
 
         // 先读一次 CPU 使用率，整机功率估算复用同一采样，避免重复计算。
         let u = SystemPower.cpuUsage()
@@ -67,6 +79,16 @@ final class PowerMonitor: ObservableObject {
     @Published var chargingCurrent: Double = 0
     /// 是否正在充电
     @Published var isCharging: Bool = false
+    /// 是否正在用电池供电（未接外电）。接通电源但已充满（非充电）时为 false。
+    @Published var onBattery: Bool = false
+    /// 电池剩余时间估计（秒）：-1 = 系统仍在估算，-2 = 接通电源，其余 = 预计剩余秒数。
+    /// 仅用于实时 UI，不入 CSV。
+    @Published var batteryTimeRemaining: Double = -1
+    /// 本次使用电池的已用时长（秒）。放电开始时记起点；插回电源时清空。
+    /// 应用启动时就已在放电的，从启动时刻起算（无更早的已知信息）。仅用于实时 UI，不入 CSV。
+    @Published private(set) var batteryUseElapsed: TimeInterval?
+    /// 放电起点（主线程维护）。
+    private var dischargeStart: Date?
     /// CPU 使用率（0...1）
     @Published var cpuUsage: Double = 0
     /// 内存使用率（0...1）
@@ -150,6 +172,8 @@ final class PowerMonitor: ObservableObject {
     private func apply(_ frame: Sampler.Frame) {
         batteryPercent = frame.batteryPercent
         isCharging = frame.isCharging
+        onBattery = frame.onBattery
+        batteryTimeRemaining = frame.batteryTimeRemaining
         chargingWatts = frame.chargingWatts
         chargingVoltage = frame.chargingVoltage
         chargingCurrent = frame.chargingCurrent
@@ -157,6 +181,19 @@ final class PowerMonitor: ObservableObject {
         memoryUsage = frame.memoryUsage
         systemWatts = frame.systemWatts
         systemWattsIsEstimate = frame.systemWattsIsEstimate
+        // 已用时长：放电中从「开始放电」起算，插回电源即清空。
+        // 首拍就已在放电时无从得知实际拔电时刻，从启动时刻起算并持续累加。
+        if frame.onBattery && !frame.isCharging {
+            if let start = dischargeStart {
+                batteryUseElapsed = Date().timeIntervalSince(start)
+            } else {
+                dischargeStart = Date()
+                batteryUseElapsed = 0
+            }
+        } else {
+            dischargeStart = nil
+            batteryUseElapsed = nil
+        }
         // 记录一条样本到日志（供历史图表）。主线程追加，磁盘落盘由日志内部后台完成。
         logger.append(PowerSample(
             t: Date(),

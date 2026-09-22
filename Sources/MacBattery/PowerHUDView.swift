@@ -114,9 +114,11 @@ struct PowerHUDView: View {
                         .font(.system(size: 8.5 * scale, weight: .semibold, design: .rounded))
                         .foregroundColor(.white.opacity(0.9))
                         .fixedSize()
-                    Text("W")
-                        .font(.system(size: 6 * scale, weight: .medium, design: .rounded))
-                        .foregroundColor(.white.opacity(0.5))
+                    if showsWattsUnit {
+                        Text("W")
+                            .font(.system(size: 6 * scale, weight: .medium, design: .rounded))
+                            .foregroundColor(.white.opacity(0.5))
+                    }
                 }
 
                 // 充电电压·电流小字（写在充电功率下方）
@@ -173,17 +175,45 @@ struct PowerHUDView: View {
     }
 
     private var chargeValueText: String {
-        monitor.chargingWatts > 0
-            ? String(format: "%.1f", monitor.chargingWatts)
-            : "0"
+        if isCharging {
+            return monitor.chargingWatts > 0
+                ? String(format: "%.1f", monitor.chargingWatts)
+                : "0"
+        }
+        // 使用电池（放电）：该行改为「已用时长」。
+        if monitor.onBattery {
+            return "已用 " + Self.batteryDuration(monitor.batteryUseElapsed ?? 0)
+        }
+        // 接通电源但已充满（非充电）：维持原占位。
+        return "0"
     }
 
-    /// 充电电压·电流，写在充电功率下方。仅在正在充电时显示（与功率一致），
-    /// 放电时显示占位，避免放电电流读数被误认为充电。充电中电流为 0（涓流暂停）仍如实显示。
+    /// 该行数值是否为功率（需要 W 单位）。使用电池时该行是时长，不带 W。
+    private var showsWattsUnit: Bool { isCharging || !monitor.onBattery }
+
+    /// 充电电压·电流，写在充电功率下方。
+    /// - 正在充电：如实显示 V·A（涓流暂停时电流为 0 仍如实显示）。
+    /// - 使用电池（放电）：该行改为「预计剩余时间」（与系统菜单栏同源的 IOPS 估算；
+    ///   系统尚未给出估计时显示「估算中…」）。
+    /// - 接通电源但已充满（非充电）：维持原占位，避免放电电流读数被误认为充电。
     private var voltageAmpsText: String {
-        isCharging
-            ? String(format: "%.1fV · %.1fA", monitor.chargingVoltage, monitor.chargingCurrent)
-            : "--V · --A"
+        if isCharging {
+            return String(format: "%.1fV · %.1fA", monitor.chargingVoltage, monitor.chargingCurrent)
+        }
+        if monitor.onBattery {
+            return "剩余 " + Self.batteryDuration(monitor.batteryTimeRemaining)
+        }
+        return "--V · --A"
+    }
+
+    /// 挂件用时长格式：不足 1 小时 → "45 分"；满 1 小时 → "1:23"；
+    /// 系统尚未给出估计（负值）→ "估算中…"。
+    static func batteryDuration(_ seconds: Double) -> String {
+        guard seconds >= 0 else { return "估算中…" }
+        let total = Int(seconds.rounded())
+        let h = total / 3600
+        let m = (total % 3600) / 60
+        return h > 0 ? "\(h):\(String(format: "%02d", m))" : "\(m) 分"
     }
 }
 
