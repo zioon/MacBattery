@@ -143,7 +143,11 @@ final class LocalizationTests: XCTestCase {
         for language in AppLanguage.supported {
             let table = L10n.loadTable(for: language)
             XCTAssertFalse(table.entries.isEmpty,
-                           "\(language.rawValue) 资源未加载 —— 检查 Package.swift 的 resources 声明与 .lproj 目录布局")
+                           """
+                           \(language.rawValue) 资源未加载 —— 检查 Package.swift 的 resources 声明与 .lproj 目录布局。
+                           已搜索的目录（含其中的 .lproj / .bundle）：
+                           \(L10n.resourceHostsForDiagnostics())
+                           """)
         }
     }
 

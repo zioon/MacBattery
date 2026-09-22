@@ -198,16 +198,6 @@ public final class L10n {
         return LocalizationTable(language: language, entries: dict)
     }
 
-    /// SwiftPM 资源 bundle 的候选名字（大小写两种都试）。
-    ///
-    /// SwiftPM 的命名是 `<PackageName>_<TargetName>.bundle`，而包标识在 manifest 层是小写的
-    /// （报错信息里出现的是 `macbattery`）—— 本机没有 Swift 工具链，无法事先验证到底是哪种。
-    /// 多试一次只是一个 `fileExists`，比猜错便宜得多。
-    private static let resourceBundleNames = [
-        "MacBattery_MacBatteryCore.bundle",
-        "macbattery_MacBatteryCore.bundle"
-    ]
-
     /// 定位某语言的 `.lproj`。
     ///
     /// ⚠️ **刻意不使用 `Bundle.module`**：SwiftPM 生成的访问器在找不到资源 bundle 时走的是
@@ -232,29 +222,54 @@ public final class L10n {
     ///
     /// 三种运行形态的资源位置都不同，这里逐个覆盖（都不依赖会 fatalError 的 `Bundle.module`）：
     /// - **`.app`**：`Contents/Resources/<lang>.lproj`（主路径，CI 会直接放这里）；
-    /// - **裸二进制 `swift run`**：资源 bundle 与可执行文件同在 `.build/<config>/`，
+    /// - **裸二进制 `swift run`**：资源 bundle 与可执行文件同在 `.build/<triple>/<config>/`，
     ///   即 `Bundle.main.bundleURL`；
-    /// - **`swift test`**：`Bundle.main` 是 `.build/<config>/MacBatteryPackageTests.xctest`，
-    ///   而资源 bundle 与它**同级**，因此还要查 `bundleURL` 的父目录。
+    /// - **`swift test`**：`Bundle.main` 未必是测试 bundle（`xctest` 工具可能才是 main），
+    ///   资源 bundle 与 `.xctest` **同级**，所以父目录必须查；`swift test` 还会通过
+    ///   `PACKAGE_RESOURCE_BUNDLE_PATH` 环境变量指出资源 bundle 的位置（SwiftPM 生成的
+    ///   访问器在 DEBUG 下也读它），也一并采纳。
     ///
-    /// 另外每种目录下都再试一层 SwiftPM 资源 bundle（`<PackageName>_<TargetName>.bundle`），
-    /// 兼容既有打包布局。
+    /// 每个目录下再按「名字以 `MacBatteryCore.bundle` 结尾」通配一层 —— 这样就不必猜
+    /// SwiftPM 用的是包名（`MacBattery_`）还是小写的包标识（`macbattery_`）。
     private static func resourceHosts() -> [URL] {
         var hosts: [URL] = []
         if let resources = Bundle.main.resourceURL { hosts.append(resources) }
         hosts.append(Bundle.main.bundleURL)
         hosts.append(Bundle.main.bundleURL.deletingLastPathComponent())
 
+        if let override = ProcessInfo.processInfo.environment["PACKAGE_RESOURCE_BUNDLE_PATH"] {
+            let url = URL(fileURLWithPath: override)
+            hosts.append(url)
+            hosts.append(url.deletingLastPathComponent())
+        }
+
         let bases = hosts
         for base in bases {
-            for name in resourceBundleNames {
-                let url = base.appendingPathComponent(name)
-                if FileManager.default.fileExists(atPath: url.path) { hosts.append(url) }
+            let entries = (try? FileManager.default.contentsOfDirectory(atPath: base.path)) ?? []
+            for entry in entries where entry.hasSuffix("MacBatteryCore.bundle") {
+                hosts.append(base.appendingPathComponent(entry))
             }
         }
 
         var seen = Set<String>()
         return hosts.filter { seen.insert($0.standardizedFileURL.path).inserted }
+    }
+
+    /// 仅供诊断：把搜索过的目录、以及其中与本地化相关的条目列成一行。
+    ///
+    /// 资源加载失败时（打包布局变化、新平台入口等）把它放进断言消息里，
+    /// 下一次失败就能直接看出「该在哪儿、实际有什么」，不用再猜一轮 CI。
+    static func resourceHostsForDiagnostics() -> String {
+        var lines: [String] = []
+        for host in resourceHosts() {
+            let entries = (try? FileManager.default.contentsOfDirectory(atPath: host.path)) ?? []
+            let relevant = entries
+                .filter { $0.hasSuffix(".lproj") || $0.hasSuffix(".bundle") }
+                .sorted()
+            let flag = FileManager.default.fileExists(atPath: host.path) ? "" : " (missing)"
+            lines.append("\(host.path)\(flag) -> [\(relevant.joined(separator: ", "))]")
+        }
+        return lines.joined(separator: "\n")
     }
 }
 
