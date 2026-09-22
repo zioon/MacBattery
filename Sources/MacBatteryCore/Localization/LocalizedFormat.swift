@@ -36,14 +36,16 @@ public enum LocalizedFormat {
     ///
     /// - Parameter template: Unicode 日期字段模板（如 `jm` / `jms` / `MMdj`）。
     ///   由系统按区域解析成实际格式，12/24 小时制与日期顺序都会自动适配。
-    public static func date(_ date: Date, template: String) -> String {
-        date(date, template: template, locale: L10n.shared.locale)
+    /// - Note: 形参刻意叫 `value` 而不是 `date` —— 叫 `date` 会遮蔽同名方法，
+    ///   `date(value, …)` 会被编译器当成「把参数当函数调用」。
+    public static func date(_ value: Date, template: String) -> String {
+        Self.date(value, template: template, locale: L10n.shared.locale)
     }
 
     /// 指定区域的日期文本。
-    public static func date(_ date: Date, template: String, locale: Locale) -> String {
+    public static func date(_ value: Date, template: String, locale: Locale) -> String {
         let formatter = dateFormatter(template: template, locale: locale)
-        return formatter.string(from: date)
+        return formatter.string(from: value)
     }
 
     // MARK: - 缓存
