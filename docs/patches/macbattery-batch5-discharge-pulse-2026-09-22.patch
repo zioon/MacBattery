@@ -1,0 +1,303 @@
+diff --git a/Sources/MacBattery/Battery.swift b/Sources/MacBattery/Battery.swift
+index af71b9f..0b7aeab 100644
+--- a/Sources/MacBattery/Battery.swift
++++ b/Sources/MacBattery/Battery.swift
+@@ -37,13 +37,14 @@ enum BatteryReader {
+         return 0
+     }
+ 
+-    /// 当前充电功率（瓦特）与是否正在充电。
++    /// 当前充电功率（瓦特）、是否充电、是否放电。
+     ///
+     /// 通过 AppleSmartBattery 的 `Voltage`(mV) × `Amperage`(mA) 计算。
+     /// `Amperage` 为负时表示电流正在充入电池，取绝对值即为充电功率。
+-    static func chargingStatus() -> (isCharging: Bool, watts: Double, voltage: Double, current: Double) {
++    /// 放电识别以供电方式权威判定：未插 AC 供电（电池供电）即视为放电，避免与充电判定耦合。
++    static func chargingStatus() -> (isCharging: Bool, isDischarging: Bool, watts: Double, voltage: Double, current: Double) {
+         let service = currentService()
+-        guard service != 0, var props = readProperties(service) else { return (false, 0, 0, 0) }
++        guard service != 0, var props = readProperties(service) else { return (false, false, 0, 0, 0) }
+ 
+         var ampere = intValue(props["Amperage"])
+         var volt = intValue(props["Voltage"])
+@@ -77,6 +78,19 @@ enum BatteryReader {
+             isCharging = (Self.ioPSIsCharging() ?? (chargingFlag == 1)) || (ampere < 0 && volt > 0)
+         }
+ 
++        // 放电识别：以供电方式判定（未插 AC 即电池供电 = 放电），与充电判定解耦。
++        // 分支顺序与充电判定严格一致，保证同一采样里 isCharging / isDischarging 互相矛盾的情况不会发生。
++        let onAC: Bool?
++        if sinceEvent < Self.eventImmediateWindow, let io = Self.ioPSOnAC() {
++            onAC = io
++        } else if let pmset = Self.pmsetBatteryStatus() {
++            onAC = pmset.onAC
++        } else {
++            onAC = nil
++        }
++        // 供电方式判定失败时保守不判为放电，避免误报。
++        let isDischarging = (onAC.map { !$0 } ?? false) && !isCharging
++
+         // 电压/电流/功率与充电状态的关系：
+         // - 电压/电流恒返回读数（mV/mA 转 V/A）；
+         // - 充电功率严格跟随 isCharging：pmset 权威判定为充电时才有功率。
+@@ -87,7 +101,7 @@ enum BatteryReader {
+         let watts = (isCharging && volt > 0 && ampere != 0)
+             ? ampereAbs * Double(volt) / 1_000_000.0
+             : 0
+-        return (isCharging, watts, voltValue, ampereAbs / 1000.0)
++        return (isCharging, isDischarging, watts, voltValue, ampereAbs / 1000.0)
+     }
+ 
+     /// 电池健康信息（变化缓慢，供健康图表按需读取）。
+@@ -173,6 +187,21 @@ enum BatteryReader {
+         return status
+     }
+ 
++    /// 用 IOPS 官方电源源判定供电方式（插 AC = true，电池 = false），与系统语义一致。
++    /// 作为接线后短窗口内 isDischarging 的即时依据，随插拔立即反映。
++    private static func ioPSOnAC() -> Bool? {
++        guard let blob = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
++              let sources = IOPSCopyPowerSourcesList(blob)?.takeRetainedValue() as? [CFTypeRef]
++        else { return nil }
++        for source in sources {
++            guard let desc = IOPSGetPowerSourceDescription(blob, source)?.takeUnretainedValue()
++                as? [String: Any],
++                let state = desc[kIOPSPowerSourceStateKey] as? String else { continue }
++            return state == "AC Power"
++        }
++        return nil
++    }
++
+     /// 用 IOPS 官方电源源判定是否在充电（与系统菜单栏电池图标一致，插拔即时）。
+     /// 兼容 CFBoolean（桥接为 Bool）与 CFNumber（0/1）两种取值形式。
+     private static func ioPSIsCharging() -> Bool? {
+diff --git a/Sources/MacBattery/FloatingPanel.swift b/Sources/MacBattery/FloatingPanel.swift
+index 600e3c9..a224f48 100644
+--- a/Sources/MacBattery/FloatingPanel.swift
++++ b/Sources/MacBattery/FloatingPanel.swift
+@@ -1,5 +1,6 @@
+ import AppKit
+ import SwiftUI
++import Combine
+ 
+ /// 置顶、透明、鼠标穿透的小浮窗（NSPanel）。
+ /// 负责创建挂件、管理设置、菜单栏入口与设置窗口。
+@@ -16,6 +17,10 @@ final class FloatingPanelController: NSWindowController {
+     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+     private var settingsWindow: NSWindow?
+     private var moveObserver: NSObjectProtocol?
++    /// 放电状态订阅：驱动菜单栏放电图标脉动。
++    private var dischargeSubscription: AnyCancellable?
++    /// 菜单栏放电脉动定时器（仅在放电期间运行）。
++    private var dischargePulseTimer: Timer?
+ 
+     /// 挂件在 scale=1 时的基础宽高（与 PowerHUDView 保持一致）。
+     /// 可见底盘为 58×58，四周各留 6pt 透明余量供充电外发光扩散，避免被窗口边界裁切。
+@@ -38,6 +43,8 @@ final class FloatingPanelController: NSWindowController {
+         self.window = panel
+ 
+         monitor.start()
++        // 订阅放电状态，驱动菜单栏放电图标脉动。
++        observeDischargeForMenuBar()
+         // 电池健康日志随应用常驻运行，即使不开图表也能持续积累健康历史。
+         healthLogger.start()
+         settings.onChange = { [weak self] in self?.applySettings() }
+@@ -61,6 +68,8 @@ final class FloatingPanelController: NSWindowController {
+         Task { @MainActor [weak self] in
+             self?.monitor.stop()
+             self?.healthLogger.stop()
++            self?.dischargePulseTimer?.invalidate()
++            self?.dischargePulseTimer = nil
+         }
+     }
+ 
+@@ -130,6 +139,35 @@ final class FloatingPanelController: NSWindowController {
+         }
+     }
+ 
++    // MARK: - 菜单栏放电脉动
++
++    /// 订阅放电状态：放电时在菜单栏图标上做低强度呼吸脉动（提示正在消耗电池）。
++    private func observeDischargeForMenuBar() {
++        dischargeSubscription = monitor.$isDischarging
++            .receive(on: DispatchQueue.main)
++            .sink { [weak self] discharging in
++                self?.setMenuBarDischargePulse(enabled: discharging)
++            }
++    }
++
++    /// 放电期间用定时器对菜单栏图标透明度做脉动；停止或结束时复位透明度为 1。
++    private func setMenuBarDischargePulse(enabled: Bool) {
++        dischargePulseTimer?.invalidate()
++        dischargePulseTimer = nil
++        statusItem.button?.alphaValue = 1.0
++        guard enabled, let button = statusItem.button else { return }
++        let timer = Timer.scheduledTimer(withTimeInterval: 1.1, repeats: true) { [weak self] _ in
++            guard let self = self else { return }
++            let target: CGFloat = button.alphaValue < 0.6 ? 1.0 : 0.4
++            NSAnimationContext.runAnimationGroup { ctx in
++                ctx.duration = 0.55
++                ctx.allowsImplicitAnimation = true
++                button.animator().alphaValue = target
++            }
++        }
++        dischargePulseTimer = timer
++    }
++
+     // MARK: - 菜单栏
+ 
+     private func buildStatusItem() {
+diff --git a/Sources/MacBattery/PowerHUDView.swift b/Sources/MacBattery/PowerHUDView.swift
+index 30fa2fb..1b62fc6 100644
+--- a/Sources/MacBattery/PowerHUDView.swift
++++ b/Sources/MacBattery/PowerHUDView.swift
+@@ -11,6 +11,11 @@ struct PowerHUDView: View {
+     /// 缩放系数（0.8 / 1.0 / 1.3…）
+     var scale: CGFloat = 1.0
+ 
++    /// 放电脉动相位：由定时器以 repeatForever 的正弦式开关驱动，用于「环呼吸 + 图标脉动」。
++    @State private var dischargingPulse = false
++    /// 放电脉动定时器（仅在放电期间运行，停止后失效）。
++    @State private var pulseTimer: Timer?
++
+     /// 可见底盘边长（scale=1 时为 58×58）。
+     private var contentSize: CGFloat { 58 }
+     /// 四周额外的透明余量：给充电时的外发光 / 模糊留出空间，避免被窗口边界裁切。
+@@ -39,6 +44,7 @@ struct PowerHUDView: View {
+ 
+     private var progress: Double { Double(monitor.batteryPercent) / 100.0 }
+     private var isCharging: Bool { monitor.isCharging }
++    private var isDischarging: Bool { monitor.isDischarging }
+ 
+     private var cpuColor: Color { Color(red: 0.25, green: 0.55, blue: 1.0) }
+     private var ramColor: Color { Color(red: 0.75, green: 0.35, blue: 0.95) }
+@@ -66,8 +72,7 @@ struct PowerHUDView: View {
+                                        startPoint: .top, endPoint: .bottom),
+                         style: StrokeStyle(lineWidth: ringWidth, lineCap: .round)
+                     )
+-                    .shadow(color: isCharging ? levelColor.opacity(0.9) : Color.clear,
+-                            radius: 1.5 * scale)
++                    .shadow(color: ringGlowColor, radius: 1.5 * scale)
+             }
+             .padding(ringWidth / 2)
+ 
+@@ -106,10 +111,10 @@ struct PowerHUDView: View {
+                 HStack(alignment: .center, spacing: 2 * scale) {
+                     Image(systemName: isCharging ? "bolt.fill" : "bolt.badge.clock")
+                         .font(.system(size: 6.5 * scale, weight: .bold))
+-                        .foregroundColor(isCharging ? .yellow : .white.opacity(0.5))
+-                        // 充电时图标静态高亮，不做任何脉动 / 晃动
+-                        .shadow(color: isCharging ? Color.yellow.opacity(0.7) : Color.clear,
+-                                radius: 1.0 * scale)
++                        .foregroundColor(iconColor)
++                        .scaleEffect(iconScale)
++                        // 充电时图标静态高亮；放电时改为脉动（透明度 + 微缩放）
++                        .shadow(color: iconGlowColor, radius: 1.0 * scale)
+                     Text(chargeValueText)
+                         .font(.system(size: 8.5 * scale, weight: .semibold, design: .rounded))
+                         .foregroundColor(.white.opacity(0.9))
+@@ -132,6 +137,67 @@ struct PowerHUDView: View {
+         // 电量变化时颜色平滑过渡；插拔电源时辉光淡入淡出（均为颜色过渡，无几何运动）
+         .animation(.easeInOut(duration: 0.8), value: monitor.batteryPercent)
+         .animation(.easeInOut(duration: 0.3), value: isCharging)
++        .onChange(of: monitor.isDischarging) { discharging in
++            setPulse(enabled: discharging)
++        }
++        .onDisappear {
++            pulseTimer?.invalidate()
++            pulseTimer = nil
++        }
++    }
++
++    // MARK: - 放电识别与脉动
++
++    /// 放电状态切换时启动 / 停止脉动定时器。定时器每 0.55s 对相位取反，
++    /// 配合下方 `iconScale` / 辉光透明度对相位的依赖实现「环呼吸 + 图标脉动」。
++    /// 放电结束时立即复位相位并停止定时器，避免残留状态。
++    private func setPulse(enabled: Bool) {
++        pulseTimer?.invalidate()
++        pulseTimer = nil
++        dischargingPulse = false
++        guard enabled else { return }
++        let timer = Timer.scheduledTimer(withTimeInterval: 0.55, repeats: true) { _ in
++            DispatchQueue.main.async {
++                withAnimation(.easeInOut(duration: 0.55)) {
++                    dischargingPulse.toggle()
++                }
++            }
++        }
++        pulseTimer = timer
++    }
++
++    /// 环形辉光：充电为静态高亮；放电为随相位呼吸的弱光；其余状态下无辉光。
++    private var ringGlowColor: Color {
++        if isCharging { return levelColor.opacity(0.9) }
++        if isDischarging {
++            return levelColor.opacity(dischargingPulse ? 0.55 : 0.15)
++        }
++        return .clear
++    }
++
++    /// 图标颜色：充电为黄色；放电为白色半透明（随相位轻微明暗）；空闲淡白。
++    private var iconColor: Color {
++        if isCharging { return .yellow }
++        if isDischarging {
++            return Color.white.opacity(dischargingPulse ? 0.95 : 0.4)
++        }
++        return .white.opacity(0.5)
++    }
++
++    /// 图标缩放：充电静止为 1；放电随相位 1 ↔ 0.82 微缩放。
++    private var iconScale: CGFloat {
++        if isCharging { return 1.0 }
++        if isDischarging { return dischargingPulse ? 1.0 : 0.82 }
++        return 1.0
++    }
++
++    /// 图标辉光：充电为黄色柔光；放电为随相位呼吸的电量色光；其余无。
++    private var iconGlowColor: Color {
++        if isCharging { return Color.yellow.opacity(0.7) }
++        if isDischarging {
++            return levelColor.opacity(dischargingPulse ? 0.7 : 0.2)
++        }
++        return .clear
+     }
+ 
+     // MARK: - 电量配色
+diff --git a/Sources/MacBattery/PowerMonitor.swift b/Sources/MacBattery/PowerMonitor.swift
+index 3fed93b..2a13ec2 100644
+--- a/Sources/MacBattery/PowerMonitor.swift
++++ b/Sources/MacBattery/PowerMonitor.swift
+@@ -11,6 +11,7 @@ enum Sampler {
+     struct Frame {
+         var batteryPercent = 0
+         var isCharging = false
++        var isDischarging = false
+         var chargingWatts = 0.0
+         var chargingVoltage = 0.0
+         var chargingCurrent = 0.0
+@@ -25,6 +26,7 @@ enum Sampler {
+ 
+         let charging = BatteryReader.chargingStatus()
+         f.isCharging = charging.isCharging
++        f.isDischarging = charging.isDischarging
+         f.chargingWatts = charging.watts
+         f.chargingVoltage = charging.voltage
+         f.chargingCurrent = charging.current
+@@ -56,6 +58,8 @@ final class PowerMonitor: ObservableObject {
+     @Published var chargingCurrent: Double = 0
+     /// 是否正在充电
+     @Published var isCharging: Bool = false
++    /// 是否正在放电（电池供电，未插 AC）
++    @Published var isDischarging: Bool = false
+     /// CPU 使用率（0...1）
+     @Published var cpuUsage: Double = 0
+     /// 内存使用率（0...1）
+@@ -137,6 +141,7 @@ final class PowerMonitor: ObservableObject {
+     private func apply(_ frame: Sampler.Frame) {
+         batteryPercent = frame.batteryPercent
+         isCharging = frame.isCharging
++        isDischarging = frame.isDischarging
+         chargingWatts = frame.chargingWatts
+         chargingVoltage = frame.chargingVoltage
+         chargingCurrent = frame.chargingCurrent
