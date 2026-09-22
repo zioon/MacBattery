@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import MacBatteryCore
 
 /// 电池健康图表窗口：一个独立的可缩放 / 拖拽窗口，展示当前最大容量 / 设计容量 / 电池健康度 / 循环次数。
 @MainActor
@@ -19,7 +20,7 @@ final class BatteryHealthPanelController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        panel.title = "MacBattery 电池健康"
+        panel.title = L("window.battery_health")
         panel.isReleasedWhenClosed = false
         // 失焦不隐藏 / 不关闭：否则点击桌面或其它窗口时图表会闪退。
         panel.hidesOnDeactivate = false
@@ -43,6 +44,11 @@ final class BatteryHealthPanelController: NSWindowController {
             Task { @MainActor in healthLogger.setWindowVisible(false) }
         }
         return controller
+    }
+
+    /// 语言切换后刷新窗口标题（窗口内文案由 `LocalizationManager` 驱动自动重绘）。
+    func refreshLocalizedText() {
+        window?.title = L("window.battery_health")
     }
 
     @available(*, unavailable)

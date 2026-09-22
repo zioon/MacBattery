@@ -14,6 +14,8 @@ final class SettingsStore: ObservableObject {
     @Published var hasCustom: Bool
     @Published var customX: Double
     @Published var customY: Double
+    /// 界面语言（`.system` = 跟随系统）。
+    @Published var language: AppLanguage
 
     /// 设置变更后的回调（由 FloatingPanelController 注入，用于应用界面）。
     var onChange: (@MainActor () -> Void)?
@@ -29,9 +31,15 @@ final class SettingsStore: ObservableObject {
         hasCustom = d.bool(forKey: Self.key("hasCustom"))
         customX = d.double(forKey: Self.key("cx"))
         customY = d.double(forKey: Self.key("cy"))
+        // 首启（或旧版本升级）时无该键 → 跟随系统，由引擎按系统首选语言匹配。
+        language = AppLanguage(rawValue: d.string(forKey: Self.key("language")) ?? "") ?? .system
 
         if sizeRaw < 0 || sizeRaw >= SizePreset.allCases.count { sizeRaw = SizePreset.medium.rawValue }
         if cornerRaw < 0 || cornerRaw >= Corner.allCases.count { cornerRaw = Corner.topRight.rawValue }
+
+        // 必须先于任何界面构造完成语言设置：菜单栏、设置窗口、挂件都在本对象之后创建，
+        // 它们构造时就会调用 L() 取文案。
+        LocalizationManager.shared.apply(language)
     }
 
     /// 写入 UserDefaults 并通知外部（面板）应用变更。
@@ -44,6 +52,9 @@ final class SettingsStore: ObservableObject {
         d.set(hasCustom, forKey: Self.key("hasCustom"))
         d.set(customX, forKey: Self.key("cx"))
         d.set(customY, forKey: Self.key("cy"))
+        d.set(language.storageValue, forKey: Self.key("language"))
+        // 语言切换即时生效：更新引擎（幂等，语言未变时不重读资源）。
+        LocalizationManager.shared.apply(language)
         onChange?()
     }
 

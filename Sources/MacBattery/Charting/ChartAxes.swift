@@ -1,4 +1,5 @@
 import SwiftUI
+import MacBatteryCore
 
 /// 图表的刻度与格式化工具。
 ///
@@ -55,23 +56,34 @@ enum ChartAxes {
     }
 
     /// 轴刻度文本：整数或大数取整显示，其余一位小数。
+    ///
+    /// 数字本身走区域化格式化：原先的 `String(format: "%.1f")` 不认区域，
+    /// 在德语等以逗号作小数点的区域会显示错误。
     static func formatY(_ v: Double) -> String {
-        if abs(v - v.rounded()) < 1e-6 || v.magnitude >= 100 { return String(format: "%.0f", v) }
-        return String(format: "%.1f", v)
+        if abs(v - v.rounded()) < 1e-6 || v.magnitude >= 100 {
+            return LocalizedFormat.number(v, decimals: 0)
+        }
+        return LocalizedFormat.number(v, decimals: 1)
     }
 
     /// 悬浮 / 图例的数值文本：整数取整显示，其余一位小数。
     static func fmtVal(_ v: Double) -> String {
-        if v.magnitude >= 100 { return String(format: "%.0f", v) }
-        if v == v.rounded() { return String(format: "%.0f", v) }
-        return String(format: "%.1f", v)
+        if v.magnitude >= 100 || v == v.rounded() {
+            return LocalizedFormat.number(v, decimals: 0)
+        }
+        return LocalizedFormat.number(v, decimals: 1)
     }
 
     /// 时长文本：秒 / 分钟 / 小时 / 天。
+    ///
+    /// 秒与分钟带数量词，英文需要区分单复数（`.one` / `.other`）；小时与天用一位小数，
+    /// 先按区域格式化数字再代入 `%@`。
     static func timeText(_ seconds: TimeInterval) -> String {
-        if seconds < 60 { return "\(Int(seconds)) 秒" }
-        if seconds < 3600 { return "\(Int(seconds / 60)) 分钟" }
-        if seconds < 86400 { return String(format: "%.1f 小时", seconds / 3600) }
-        return String(format: "%.1f 天", seconds / 86400)
+        if seconds < 60 { return LP("duration.seconds", count: Int(seconds)) }
+        if seconds < 3600 { return LP("duration.minutes", count: Int(seconds / 60)) }
+        if seconds < 86400 {
+            return L("duration.hours", LocalizedFormat.number(seconds / 3600, decimals: 1))
+        }
+        return L("duration.days", LocalizedFormat.number(seconds / 86400, decimals: 1))
     }
 }

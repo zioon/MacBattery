@@ -1,4 +1,5 @@
 import SwiftUI
+import MacBatteryCore
 
 /// 置顶挂件 UI：外层矩形充电环（完整底环 + 电量进度）环绕中间两行功率；
 /// 内层一个整体的内环承接 CPU / RAM，上半环为 CPU、下半环为 RAM，各按占用率填充；
@@ -10,6 +11,17 @@ struct PowerHUDView: View {
     @ObservedObject var monitor: PowerMonitor
     /// 缩放系数（0.8 / 1.0 / 1.3…）
     var scale: CGFloat = 1.0
+    /// 语言变化时驱动重绘。挂件视图树在语言切换时也会被 FloatingPanelController 重建，
+    /// 这里再观察一次，是为了不让「文案随语言更新」依赖控制器的重建时机。
+    @ObservedObject private var localization: LocalizationManager
+
+    /// 显式初始化：`localization` 是私有存储属性，memberwise 初始化器会退化为 private，
+    /// 故显式提供与原先等价的构造签名（调用点写作 `PowerHUDView(monitor:scale:)` 不变）。
+    init(monitor: PowerMonitor, scale: CGFloat = 1.0) {
+        self.monitor = monitor
+        self.scale = scale
+        self.localization = LocalizationManager.shared
+    }
 
     /// 可见底盘边长（scale=1 时为 58×58）。
     private var contentSize: CGFloat { 58 }
@@ -98,7 +110,7 @@ struct PowerHUDView: View {
                         .font(.system(size: 12 * scale, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
                         .fixedSize()
-                    Text("W")
+                    Text(L("hud.unit.watts"))
                         .font(.system(size: 6.5 * scale, weight: .semibold, design: .rounded))
                         .foregroundColor(.white.opacity(0.6))
                 }
@@ -115,7 +127,7 @@ struct PowerHUDView: View {
                         .foregroundColor(.white.opacity(0.9))
                         .fixedSize()
                     if showsWattsUnit {
-                        Text("W")
+                        Text(L("hud.unit.watts"))
                             .font(.system(size: 6 * scale, weight: .medium, design: .rounded))
                             .foregroundColor(.white.opacity(0.5))
                     }
@@ -169,23 +181,23 @@ struct PowerHUDView: View {
     /// 整机功率文本。估算值（`systemWattsIsEstimate`）时前置 `~` 以示区分（诚实性标注）；
     /// 实测值（SMC 直读 / root helper）无前缀。仅当功率为 0（理论上极少见）时才显示 `--`。
     private var systemValueText: String {
-        guard monitor.systemWatts > 0 else { return "--" }
-        let value = String(format: "%.1f", monitor.systemWatts)
+        guard monitor.systemWatts > 0 else { return L("common.placeholder") }
+        let value = LocalizedFormat.number(monitor.systemWatts, decimals: 1)
         return monitor.systemWattsIsEstimate ? "~" + value : value
     }
 
     private var chargeValueText: String {
         if isCharging {
             return monitor.chargingWatts > 0
-                ? String(format: "%.1f", monitor.chargingWatts)
-                : "0"
+                ? LocalizedFormat.number(monitor.chargingWatts, decimals: 1)
+                : L("hud.zero")
         }
         // 使用电池（放电）：该行改为「已用时长」。
         if monitor.onBattery {
-            return "已用 " + Self.batteryDuration(monitor.batteryUseElapsed ?? 0)
+            return L("hud.used_prefix", Self.batteryDuration(monitor.batteryUseElapsed ?? 0))
         }
         // 接通电源但已充满（非充电）：维持原占位。
-        return "0"
+        return L("hud.zero")
     }
 
     /// 该行数值是否为功率（需要 W 单位）。使用电池时该行是时长，不带 W。
@@ -198,22 +210,23 @@ struct PowerHUDView: View {
     /// - 接通电源但已充满（非充电）：维持原占位，避免放电电流读数被误认为充电。
     private var voltageAmpsText: String {
         if isCharging {
-            return String(format: "%.1fV · %.1fA", monitor.chargingVoltage, monitor.chargingCurrent)
+            return L("hud.voltage_amps",
+                     LocalizedFormat.number(monitor.chargingVoltage, decimals: 1),
+                     LocalizedFormat.number(monitor.chargingCurrent, decimals: 1))
         }
         if monitor.onBattery {
-            return "剩余 " + Self.batteryDuration(monitor.batteryTimeRemaining)
+            return L("hud.remaining_prefix", Self.batteryDuration(monitor.batteryTimeRemaining))
         }
-        return "--V · --A"
+        return L("hud.voltage_amps.placeholder")
     }
 
-    /// 挂件用时长格式：不足 1 小时 → "45 分"；满 1 小时 → "1:23"；
+    /// 挂件用时长格式：统一 H:MM（不足 1 小时同样带 `0:` 前缀，如 "0:45"、"1:23"、"10:05"），
+    /// 与系统菜单栏观感一致，避免「X 分 / H:MM」两种形状来回跳。
     /// 系统尚未给出估计（负值）→ "估算中…"。
     static func batteryDuration(_ seconds: Double) -> String {
-        guard seconds >= 0 else { return "估算中…" }
-        let total = Int(seconds.rounded())
-        let h = total / 3600
-        let m = (total % 3600) / 60
-        return h > 0 ? "\(h):\(String(format: "%02d", m))" : "\(m) 分"
+        guard seconds >= 0 else { return L("hud.estimating") }
+        let totalMinutes = Int(seconds.rounded()) / 60
+        return "\(totalMinutes / 60):\(String(format: "%02d", totalMinutes % 60))"
     }
 }
 

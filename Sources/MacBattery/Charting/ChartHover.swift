@@ -1,4 +1,5 @@
 import SwiftUI
+import MacBatteryCore
 
 /// 悬停浮层数据：竖线位置 + 该时刻各系列取值。
 ///
@@ -18,13 +19,12 @@ struct ChartHoverInfo {
 
 enum ChartHover {
 
-    /// 悬浮层的时间格式：随查看跨度变粗（同一规则两图共用）。
-    static func timeFormatter(span: Double) -> DateFormatter {
-        let f = DateFormatter()
-        if span >= 86400 { f.dateFormat = "MM-dd HH:mm" }
-        else if span >= 3600 { f.dateFormat = "HH:mm" }
-        else { f.dateFormat = "HH:mm:ss" }
-        return f
+    /// 悬浮层的时间字段模板：随查看跨度变粗（同一规则两图共用）。
+    /// 交给系统按区域解析，避免写死小时制 —— 原先硬编码 "HH:mm"，12 小时制区域会显示成 24 小时制。
+    static func timeTemplate(span: Double) -> String {
+        if span >= 86400 { return "MMdj" }
+        if span >= 3600 { return "jm" }
+        return "jms"
     }
 
     /// 绘制悬停竖线 + 该时刻数值浮层。
@@ -51,8 +51,7 @@ enum ChartHover {
         let anchor: UnitPoint = goRight ? .leading : .trailing
         let bx = goRight ? x + 10 : x - 10
 
-        let formatter = timeFormatter(span: span)
-        let timeText = Text(formatter.string(from: info.date))
+        let timeText = Text(LocalizedFormat.date(info.date, template: timeTemplate(span: span)))
             .font(.system(size: 10, weight: .semibold))
             .foregroundColor(.white)
         ctx.draw(timeText, at: CGPoint(x: bx, y: yTop + 8), anchor: anchor)

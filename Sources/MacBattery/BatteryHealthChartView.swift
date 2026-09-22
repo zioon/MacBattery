@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import MacBatteryCore
 
 /// 电池健康信息图表：上图将「设计容量 + 当前最大容量」（左轴，mAh）与「电池健康度」
 /// （右轴副坐标，%）合成一张图，三条折线共共享时间轴；下图单独展示循环次数。
@@ -12,6 +13,8 @@ import AppKit
 struct BatteryHealthChartView: View {
 
     @ObservedObject var healthLogger: BatteryHealthLogger
+    /// 语言变化时驱动本视图重绘（不必额外注入参数，直接观察共享实例）。
+    @ObservedObject private var localization: LocalizationManager
 
     // MARK: 可见范围与缩放状态
 
@@ -46,34 +49,44 @@ struct BatteryHealthChartView: View {
     }
 
     /// 上图左轴（容量，mAh）：设计容量 + 当前最大容量，共轴。
-    private static let capacityMetrics: [HealthMetric] = [
-        HealthMetric(title: "当前最大容量",
-                     color: Color(red: 0.16, green: 0.85, blue: 0.62),
-                     value: { Double($0.maxCapacity) },
-                     format: { "\(Int($0)) mAh" }),
-        HealthMetric(title: "设计容量",
-                     color: Color(red: 0.30, green: 0.62, blue: 0.95),
-                     value: { Double($0.designCapacity) },
-                     format: { "\(Int($0)) mAh" })
-    ]
+    ///
+    /// ⚠️ 必须是计算属性（`static var`）而非 `static let`：标题与数值格式都随语言变化，
+    /// 用 `static let` 缓存住会导致**切换语言后图例永远停在旧语言**。
+    private static var capacityMetrics: [HealthMetric] {
+        [
+            HealthMetric(title: L("health.metric.max_capacity"),
+                         color: Color(red: 0.16, green: 0.85, blue: 0.62),
+                         value: { Double($0.maxCapacity) },
+                         format: { L("health.unit.mah", Int($0)) }),
+            HealthMetric(title: L("health.metric.design_capacity"),
+                         color: Color(red: 0.30, green: 0.62, blue: 0.95),
+                         value: { Double($0.designCapacity) },
+                         format: { L("health.unit.mah", Int($0)) })
+        ]
+    }
 
     /// 上图右轴（副坐标，%）：电池健康度。
-    private static let healthMetric = HealthMetric(title: "电池健康度",
+    private static var healthMetric: HealthMetric {
+        HealthMetric(title: L("health.metric.health_pct"),
                      color: Color(red: 0.96, green: 0.75, blue: 0.20),
                      value: { $0.healthPercent },
-                     format: { String(format: "%.1f%%", $0) })
+                     format: { L("health.unit.pct", LocalizedFormat.number($0, decimals: 1)) })
+    }
 
     /// 下图（循环次数）。
-    private static let cycleMetric = HealthMetric(title: "循环次数",
+    private static var cycleMetric: HealthMetric {
+        HealthMetric(title: L("health.metric.cycles"),
                      color: Color(red: 0.95, green: 0.45, blue: 0.42),
                      value: { Double($0.cycleCount) },
-                     format: { "\(Int($0)) 次" })
+                     format: { LP("health.unit.cycles", count: Int($0)) })
+    }
 
     /// 顶部指标条展示的全部指标（容量 2 项 + 健康度 + 循环次数）。
     private static var allMetrics: [HealthMetric] { capacityMetrics + [healthMetric, cycleMetric] }
 
     init(healthLogger: BatteryHealthLogger) {
         self.healthLogger = healthLogger
+        self.localization = LocalizationManager.shared
         _endTime = State(initialValue: Date())
     }
 
@@ -116,19 +129,20 @@ struct BatteryHealthChartView: View {
                 .foregroundColor(.secondary)
             Spacer(minLength: 0)
             // 轴说明，与历史图表的「左轴：% · 右轴：W / V / A」对应。
-            Text("左轴：mAh  ·  右轴：%")
+            Text(L("health.axis_hint"))
                 .font(.caption2)
                 .foregroundColor(.secondary)
-            windowPresetButton("1d", Self.windowPresets[0])
-            windowPresetButton("1w", Self.windowPresets[1])
-            windowPresetButton("1m", Self.windowPresets[2])
-            windowPresetButton("1q", Self.windowPresets[3])
-            windowPresetButton("1y", Self.windowPresets[4])
-            Button("全部") { fitToAll() }
+            // 参数是文案键名，由 windowPresetButton 内部经 L() 取。
+            windowPresetButton("health.window.1d", Self.windowPresets[0])
+            windowPresetButton("health.window.1w", Self.windowPresets[1])
+            windowPresetButton("health.window.1m", Self.windowPresets[2])
+            windowPresetButton("health.window.1q", Self.windowPresets[3])
+            windowPresetButton("health.window.1y", Self.windowPresets[4])
+            Button(L("common.all")) { fitToAll() }
                 .buttonStyle(.plain)
                 .font(.caption.weight(activeWindowPreset == nil ? .semibold : .regular))
                 .foregroundColor(activeWindowPreset == nil ? Color.accentColor : .primary)
-            Button("重置数据") { confirmReset() }
+            Button(L("common.reset_data")) { confirmReset() }
                 .buttonStyle(.plain)
                 .font(.caption)
                 .foregroundColor(.red)
@@ -137,7 +151,7 @@ struct BatteryHealthChartView: View {
 
     /// 底部信息：样本条数 + 当前查看的时间窗（与历史图表一致）。
     private var summaryText: String {
-        "样本 \(healthLogger.samples.count) 个 · 查看最近 " + timeText(timeRange)
+        LP("chart.summary.samples", count: healthLogger.samples.count, timeText(timeRange))
     }
 
     private func timeText(_ seconds: TimeInterval) -> String {
@@ -149,10 +163,10 @@ struct BatteryHealthChartView: View {
         Self.windowPresets.first { $0 == timeRange }
     }
 
-    /// 时间范围按钮。
-    private func windowPresetButton(_ title: String, _ seconds: TimeInterval) -> some View {
+    /// 时间范围按钮。参数是**文案键名**（不是最终文案），由 L() 取。
+    private func windowPresetButton(_ key: String, _ seconds: TimeInterval) -> some View {
         let active = activeWindowPreset == seconds
-        return Button(title) { setWindow(seconds) }
+        return Button(L(key)) { setWindow(seconds) }
             .buttonStyle(.plain)
             .font(.caption.weight(active ? .semibold : .regular))
             .foregroundColor(active ? Color.accentColor : .primary)
@@ -178,7 +192,7 @@ struct BatteryHealthChartView: View {
     }
 
     private func currentValueText(_ m: HealthMetric) -> String {
-        guard let last = healthLogger.samples.last else { return "--" }
+        guard let last = healthLogger.samples.last else { return L("common.placeholder") }
         let v = m.value(last)
         return m.format(v)
     }
@@ -368,11 +382,11 @@ struct BatteryHealthChartView: View {
     /// 确认后清空电池健康日志（内存 + 磁盘 CSV），历史不可恢复。
     private func confirmReset() {
         let alert = NSAlert()
-        alert.messageText = "重置健康数据"
-        alert.informativeText = "将清空电池健康日志的全部历史数据（含磁盘 CSV），且不可恢复。确定重置？"
+        alert.messageText = L("alert.reset_health.title")
+        alert.informativeText = L("alert.reset_health.message")
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "重置")
-        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: L("common.reset"))
+        alert.addButton(withTitle: L("common.cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         healthLogger.reset()
         // 复位视图状态，回到空数据的默认视图。
@@ -434,14 +448,18 @@ private struct HealthDraw {
 
         // 上图左轴刻度（容量 mAh）
         drawAxisTicks(range: capRange, x: plot.minX, align: .trailing,
-                      yTop: plot.topY, height: plot.topH, in: context) { "\(Int($0))" }
+                      yTop: plot.topY, height: plot.topH, in: context) {
+            LocalizedFormat.number($0, decimals: 0)
+        }
         // 上图右轴刻度（健康度 %，副坐标）
         drawAxisTicks(range: healthRange, x: plot.maxX, align: .leading,
-                      yTop: plot.topY, height: plot.topH, in: context) { String(format: "%.0f%%", $0) }
+                      yTop: plot.topY, height: plot.topH, in: context) {
+            L("health.unit.pct", LocalizedFormat.number($0, decimals: 0))
+        }
         // 左右轴单位标签（顶部分别标注 mAh / %）
-        let mAh = Text("mAh").font(.system(size: 9)).foregroundColor(.gray)
+        let mAh = Text(L("health.unit.mah.short")).font(.system(size: 9)).foregroundColor(.gray)
         context.draw(mAh, at: CGPoint(x: plot.minX - 4, y: plot.top - 1), anchor: .bottomTrailing)
-        let pct = Text("%").font(.system(size: 9)).foregroundColor(.gray)
+        let pct = Text(L("health.unit.pct.sign")).font(.system(size: 9)).foregroundColor(.gray)
         context.draw(pct, at: CGPoint(x: plot.maxX + 4, y: plot.top - 1), anchor: .bottomLeading)
 
         // 下图行标题（左边缘，靠上）
@@ -450,18 +468,19 @@ private struct HealthDraw {
         context.draw(cTitle, at: CGPoint(x: plot.minX - 6, y: plot.bottomY + 1), anchor: .topTrailing)
 
         // 底部共享时间轴
-        let formatter = Self.xFormatter(for: span)
+        let template = Self.xTemplate(for: span)
         for tick in timeTicks() {
             let xx = timeX(tick)
             if xx < plot.minX || xx > plot.maxX { continue }
             let date = Date(timeIntervalSince1970: tick)
-            let text = Text(formatter.string(from: date)).font(.system(size: 9)).foregroundColor(.gray)
+            let text = Text(LocalizedFormat.date(date, template: template))
+                .font(.system(size: 9)).foregroundColor(.gray)
             context.draw(text, at: CGPoint(x: xx, y: plot.top + plot.plotH + 12), anchor: .top)
         }
 
         // 无数据占位
         if visibleSamples.isEmpty {
-            let text = Text("暂无健康数据（应用运行后会随采样累积）")
+            let text = Text(L("health.empty_placeholder"))
                 .font(.system(size: 10)).foregroundColor(.gray)
             context.draw(text, at: CGPoint(x: plot.minX + plot.plotW / 2, y: plot.top + plot.plotH / 2))
         }
@@ -547,11 +566,11 @@ private struct HealthDraw {
         return out
     }
 
-    private static func xFormatter(for span: Double) -> DateFormatter {
-        let f = DateFormatter()
-        if span <= 3600 { f.dateFormat = "HH:mm" }
-        else if span <= 86400 { f.dateFormat = "MM-dd HH:mm" }
-        else { f.dateFormat = "MM-dd" }
-        return f
+    /// 时间轴刻度用的日期字段模板（由系统按区域解析，12/24 小时制与日期顺序自动适配）。
+    /// 原先写死 `dateFormat`，在 12 小时制区域会显示成 24 小时制文本。
+    private static func xTemplate(for span: Double) -> String {
+        if span <= 3600 { return "jm" }
+        if span <= 86400 { return "MMdj" }
+        return "Md"
     }
 }

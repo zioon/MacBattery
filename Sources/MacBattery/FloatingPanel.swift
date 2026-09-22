@@ -28,6 +28,9 @@ final class FloatingPanelController: NSWindowController {
     /// 当前渲染 HUD 用的缩放档位。未变化时不重建视图树（见 applySettings 的说明）。
     private var renderedScale: CGFloat?
 
+    /// 当前渲染界面所用的语言。切换语言时菜单、窗口标题与挂件视图树都要刷新。
+    private var renderedLanguage: AppLanguage?
+
     /// 挂件在 scale=1 时的基础宽高（与 PowerHUDView 保持一致）。
     /// 可见底盘为 58×58，四周各留 6pt 透明余量供充电外发光扩散，避免被窗口边界裁切。
     private let baseWidth: CGFloat = 70
@@ -103,6 +106,17 @@ final class FloatingPanelController: NSWindowController {
     /// 按当前设置重建尺寸/内容、定位、设置穿透。
     private func applySettings() {
         guard let panel = window as? NSPanel else { return }
+
+        // 语言变化：菜单栏与三个窗口标题是命令式 API（不会随 SwiftUI 自动重绘），必须显式
+        // 刷新；挂件视图树的文案在构造时取，也要重建（renderScale 置空即触发下面的重建分支）。
+        if renderedLanguage != LocalizationManager.shared.language {
+            renderedLanguage = LocalizationManager.shared.language
+            menuController.rebuild()
+            settingsWindowController?.refreshLocalizedText()
+            chartController?.refreshLocalizedText()
+            healthPanelController?.refreshLocalizedText()
+            renderedScale = nil
+        }
 
         let preset = SizePreset(rawValue: settings.sizeRaw) ?? .medium
         let scale = CGFloat(preset.scale)

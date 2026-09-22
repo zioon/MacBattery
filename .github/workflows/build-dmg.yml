@@ -30,6 +30,10 @@ jobs:
             echo "::error::MacBatteryCore 必须保持纯逻辑层（禁止 import AppKit / IOKit / SwiftUI）"
             exit 1
           fi
+      - name: Guard against hardcoded UI strings
+        run: python3 Scripts/check_hardcoded_strings.py
+      - name: Guard localization keys
+        run: python3 Scripts/check_localization_keys.py
       - name: swift test
         run: swift test
         timeout-minutes: 20
@@ -103,6 +107,17 @@ jobs:
           lipo -create "$ARM_BIN/MacBattery" "$X64_BIN/MacBattery" -output dist/MacBattery
           lipo -create "$ARM_BIN/MacBatteryHelper" "$X64_BIN/MacBatteryHelper" -output dist/MacBatteryHelper
           lipo -info dist/MacBattery
+
+          # 多语言资源 bundle（内含 *.lproj/Localizable.strings）与架构无关，取 arm64 那份。
+          # 必须随 .app 一起分发：Bundle.module 找不到它时，界面文案会整体回退成键名。
+          rm -rf dist/MacBattery_MacBatteryCore.bundle
+          cp -R "$ARM_BIN/MacBattery_MacBatteryCore.bundle" dist/
+          test -d dist/MacBattery_MacBatteryCore.bundle/zh-Hans.lproj || {
+            echo "::error::资源 bundle 内缺少 zh-Hans.lproj（默认语言）"; exit 1;
+          }
+          test -d dist/MacBattery_MacBatteryCore.bundle/en.lproj || {
+            echo "::error::资源 bundle 内缺少 en.lproj"; exit 1;
+          }
         timeout-minutes: 30
 
       - name: Assemble .app bundle
@@ -114,7 +129,16 @@ jobs:
           mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
           # 构建步骤已把 universal 二进制放进 dist/。
           cp dist/MacBattery "$APP/Contents/MacOS/MacBattery"
-          echo 'PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPCFET0NUWVBFIHBsaXN0IFBVQkxJQyAiLS8vQXBwbGUvL0RURCBQTElTVCAxLjAvL0VOIiAiaHR0cDovL3d3dy5hcHBsZS5jb20vRFREcy9Qcm9wZXJ0eUxpc3QtMS4wLmR0ZCI+CjxwbGlzdCB2ZXJzaW9uPSIxLjAiPgo8ZGljdD4KPGtleT5DRkJ1bmRsZUV4ZWN1dGFibGU8L2tleT48c3RyaW5nPk1hY0JhdHRlcnk8L3N0cmluZz4KPGtleT5DRkJ1bmRsZUlkZW50aWZpZXI8L2tleT48c3RyaW5nPmNvbS56aW9vbi5tYWNiYXR0ZXJ5PC9zdHJpbmc+CjxrZXk+Q0ZCdW5kbGVJbmZvRGljdGlvbmFyeVZlcnNpb248L2tleT48c3RyaW5nPjYuMDwvc3RyaW5nPgo8a2V5PkNGQnVuZGxlTmFtZTwva2V5PjxzdHJpbmc+TWFjQmF0dGVyeTwvc3RyaW5nPgo8a2V5PkNGQnVuZGxlRGlzcGxheU5hbWU8L2tleT48c3RyaW5nPk1hY0JhdHRlcnk8L3N0cmluZz4KPGtleT5DRkJ1bmRsZVBhY2thZ2VUeXBlPC9rZXk+PHN0cmluZz5BUFBMPC9zdHJpbmc+CjxrZXk+Q0ZCdW5kbGVWZXJzaW9uPC9rZXk+PHN0cmluZz4xLjA8L3N0cmluZz4KPGtleT5DRkJ1bmRsZVNob3J0VmVyc2lvblN0cmluZzwva2V5PjxzdHJpbmc+MS4wLjA8L3N0cmluZz4KPGtleT5MU01pbmltdW1TeXN0ZW1WZXJzaW9uPC9rZXk+PHN0cmluZz4xMi4wPC9zdHJpbmc+CjxrZXk+TlNIaWdoUmVzb2x1dGlvbkNhcGFibGU8L2tleT48dHJ1ZS8+CjwvZGljdD4KPC9wbGlzdD4=' | base64 --decode > "$APP/Contents/Info.plist"
+
+          # 多语言资源 bundle 放进 Contents/Resources：Bundle.module 会搜索
+          # Bundle.main.resourceURL，放这里才能被找到（否则文案全部回退成键名）。
+          cp -R dist/MacBattery_MacBatteryCore.bundle "$APP/Contents/Resources/"
+          test -d "$APP/Contents/Resources/MacBattery_MacBatteryCore.bundle/zh-Hans.lproj" || {
+            echo "::error::应用包内缺少多语言资源（界面文案会回退为键名）"; exit 1;
+          }
+          # dist 里的那份只为校验来源，删掉以免 DMG 里多出一个资源 bundle 目录。
+          rm -rf dist/MacBattery_MacBatteryCore.bundle
+          echo 'PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPCFET0NUWVBFIHBsaXN0IFBVQkxJQyAiLS8vQXBwbGUvL0RURCBQTElTVCAxLjAvL0VOIiAiaHR0cDovL3d3dy5hcHBsZS5jb20vRFREcy9Qcm9wZXJ0eUxpc3QtMS4wLmR0ZCI+CjxwbGlzdCB2ZXJzaW9uPSIxLjAiPgo8ZGljdD4KPGtleT5DRkJ1bmRsZUV4ZWN1dGFibGU8L2tleT48c3RyaW5nPk1hY0JhdHRlcnk8L3N0cmluZz4KPGtleT5DRkJ1bmRsZUlkZW50aWZpZXI8L2tleT48c3RyaW5nPmNvbS56aW9vbi5tYWNiYXR0ZXJ5PC9zdHJpbmc+CjxrZXk+Q0ZCdW5kbGVJbmZvRGljdGlvbmFyeVZlcnNpb248L2tleT48c3RyaW5nPjYuMDwvc3RyaW5nPgo8a2V5PkNGQnVuZGxlTmFtZTwva2V5PjxzdHJpbmc+TWFjQmF0dGVyeTwvc3RyaW5nPgo8a2V5PkNGQnVuZGxlRGlzcGxheU5hbWU8L2tleT48c3RyaW5nPk1hY0JhdHRlcnk8L3N0cmluZz4KPGtleT5DRkJ1bmRsZVBhY2thZ2VUeXBlPC9rZXk+PHN0cmluZz5BUFBMPC9zdHJpbmc+CjxrZXk+Q0ZCdW5kbGVWZXJzaW9uPC9rZXk+PHN0cmluZz4xLjA8L3N0cmluZz4KPGtleT5DRkJ1bmRsZVNob3J0VmVyc2lvblN0cmluZzwva2V5PjxzdHJpbmc+MS4wLjA8L3N0cmluZz4KPGtleT5DRkJ1bmRsZURldmVsb3BtZW50UmVnaW9uPC9rZXk+PHN0cmluZz56aC1IYW5zPC9zdHJpbmc+CjxrZXk+Q0ZCdW5kbGVMb2NhbGl6YXRpb25zPC9rZXk+PGFycmF5PjxzdHJpbmc+emgtSGFuczwvc3RyaW5nPjxzdHJpbmc+ZW48L3N0cmluZz48L2FycmF5Pgo8a2V5PkxTTWluaW11bVN5c3RlbVZlcnNpb248L2tleT48c3RyaW5nPjEyLjA8L3N0cmluZz4KPGtleT5OU0hpZ2hSZXNvbHV0aW9uQ2FwYWJsZTwva2V5Pjx0cnVlLz4KPC9kaWN0Pgo8L3BsaXN0Pg==' | base64 --decode > "$APP/Contents/Info.plist"
 
           # 拷贝应用图标到 bundle 并声明 CFBundleIconFile，否则 Finder/Dock 显示默认空白图标。
           if [ -f Resources/AppIcon.icns ]; then

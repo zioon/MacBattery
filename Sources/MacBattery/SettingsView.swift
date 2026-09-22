@@ -2,73 +2,91 @@ import SwiftUI
 import AppKit
 import MacBatteryCore
 
-/// 设置面板：大小、位置、鼠标穿透、整机功率估算上限（TDP）、在线更新。
+/// 设置面板：语言、大小、位置、鼠标穿透、整机功率估算上限（TDP）、在线更新。
+///
+/// 文案一律经 `L("key")` 取（返回 `String`，`Text(String)` 按字面渲染）。
+/// ⚠️ 不要改回 `Text("中文")`：字面量会被当成 `LocalizedStringKey` 走 `Bundle.main`，
+/// 绕过应用内的语言选择，切语言后这一处不会跟着变。
 struct SettingsView: View {
     @ObservedObject var store: SettingsStore
     @ObservedObject var updater: UpdateChecker
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("MacBattery 设置").font(.headline)
+            Text(L("window.settings")).font(.headline)
 
-            Picker("大小", selection: $store.sizeRaw) {
-                ForEach(SizePreset.allCases, id: \.rawValue) { p in
-                    Text(p.label).tag(p.rawValue)
+            // 语言入口放在最上方：与 macOS「每应用语言」的习惯一致。
+            Picker(L("settings.language"), selection: $store.language) {
+                ForEach(AppLanguage.allCases, id: \.rawValue) { lang in
+                    Text(lang.menuLabel).tag(lang)
                 }
             }
 
-            Picker("位置", selection: $store.cornerRaw) {
-                ForEach(Corner.allCases, id: \.rawValue) { c in
-                    Text(c.label).tag(c.rawValue)
+            Picker(L("common.size"), selection: $store.sizeRaw) {
+                ForEach(SizePreset.allCases, id: \.rawValue) { preset in
+                    Text(L(preset.localizationKey)).tag(preset.rawValue)
+                }
+            }
+
+            Picker(L("common.position"), selection: $store.cornerRaw) {
+                ForEach(Corner.allCases, id: \.rawValue) { corner in
+                    Text(L(corner.localizationKey)).tag(corner.rawValue)
                 }
             }
             if store.hasCustom {
-                Text("已在自定义位置（拖动挂件/重选四角可更改）")
+                Text(L("settings.custom_position_hint"))
                     .font(.caption2)
                     .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
-            Toggle("鼠标穿透（开启后不可拖动）", isOn: $store.passthrough)
+            Toggle(L("settings.passthrough_toggle"), isOn: $store.passthrough)
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text("整机功率估算上限 (TDP)")
+                    Text(L("settings.tdp.title"))
                     Spacer()
-                    Text("\(Int(store.tdpWatts)) W")
+                    Text(L("settings.tdp.value", Int(store.tdpWatts)))
                         .foregroundColor(.secondary)
                 }
                 Slider(value: $store.tdpWatts, in: 20...180, step: 5)
-                Text("整机功率在 Intel 机型上 macOS 不提供实测值，这里按机型最大功耗估算。")
+                // 说明文字允许换行而不是截断：英文比中文长，固定 340pt 宽下必须靠换行容纳。
+                Text(L("settings.tdp.hint.estimate"))
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                Text("把它调到接近你机型的额定功耗（如轻薄本 28W、标压 U 45W、H 系 60W+），整机功率会更贴近真实。")
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(L("settings.tdp.hint.calibrate"))
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                Text("挂件上整机功率数字带 `~` 前缀时表示那是估算值；安装 root helper 后可读到真实值（见 README）。")
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(L("settings.tdp.hint.tilde"))
                     .font(.caption2)
                     .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Divider()
 
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
-                    Text("当前版本 \(AppVersion.current)")
+                    Text(L("settings.version.current", AppVersion.current))
                     Spacer()
-                    Button("检查更新") { updater.checkForUpdates(interactive: true) }
+                    Button(L("settings.check_update")) { updater.checkForUpdates(interactive: true) }
                         .disabled(updater.state.isBusy)
                 }
                 Text(updater.state.summary)
                     .font(.caption2)
                     .foregroundColor(.secondary)
-                Text("启动时会自动检查，发现新版本将自动下载 DMG 到「下载」文件夹。")
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(L("settings.update.auto_hint"))
                     .font(.caption2)
                     .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             HStack {
                 Spacer()
-                Button("完成") {
+                Button(L("settings.done")) {
                     store.commit()
                     NSApp.keyWindow?.close()
                 }
@@ -79,6 +97,7 @@ struct SettingsView: View {
         .frame(width: 340)
 
         // 任何设置改变即持久化并应用
+        .onChange(of: store.language) { _ in store.commit() }
         .onChange(of: store.sizeRaw) { _ in store.commit() }
         .onChange(of: store.cornerRaw) { _ in store.commit() }
         .onChange(of: store.passthrough) { _ in store.commit() }

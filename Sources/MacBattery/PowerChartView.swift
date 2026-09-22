@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import MacBatteryCore
 
 /// 可缩放 / 可拖拽的多系列折线图，支持主副双纵轴。
 ///
@@ -18,6 +19,8 @@ import AppKit
 struct PowerChartView: View {
 
     @ObservedObject var logger: PowerLogger
+    /// 语言变化时驱动本视图重绘（不必额外注入参数，直接观察共享实例）。
+    @ObservedObject private var localization: LocalizationManager
 
     // MARK: 可见范围与缩放状态
 
@@ -73,6 +76,7 @@ struct PowerChartView: View {
 
     init(logger: PowerLogger) {
         self.logger = logger
+        self.localization = LocalizationManager.shared
         _endTime = State(initialValue: Date())
     }
 
@@ -86,19 +90,19 @@ struct PowerChartView: View {
                     .font(.caption2)
                     .foregroundColor(.secondary)
                 Spacer()
-                Text("左轴：%  ·  右轴：W / V / A")
+                Text(L("chart.history.axis_hint"))
                     .font(.caption2)
                     .foregroundColor(.secondary)
                 // 时间窗口快捷切换：5m / 30m / 1h / 24h / 全部（当前选中项高亮）。
-                windowPresetButton("5m", Self.windowPresets[0])
-                windowPresetButton("30m", Self.windowPresets[1])
-                windowPresetButton("1h", Self.windowPresets[2])
-                windowPresetButton("24h", Self.windowPresets[3])
-                Button("全部") { fitToAll() }
+                windowPresetButton("chart.window.5m", Self.windowPresets[0])
+                windowPresetButton("chart.window.30m", Self.windowPresets[1])
+                windowPresetButton("chart.window.1h", Self.windowPresets[2])
+                windowPresetButton("chart.window.24h", Self.windowPresets[3])
+                Button(L("common.all")) { fitToAll() }
                     .buttonStyle(.plain)
                     .font(.caption.weight(activeWindowPreset == nil ? .semibold : .regular))
                     .foregroundColor(activeWindowPreset == nil ? Color.accentColor : .primary)
-                Button("重置数据") { confirmReset() }
+                Button(L("common.reset_data")) { confirmReset() }
                     .buttonStyle(.plain)
                     .font(.caption)
                     .foregroundColor(.red)
@@ -123,13 +127,13 @@ struct PowerChartView: View {
 
     private var legend: some View {
         HStack(spacing: 12) {
-            legendToggle("电池%", $showBattery, batteryColor, value: { Double($0.batteryPercent) })
-            legendToggle("整机 W", $showSystemW, systemColor, value: { $0.systemWatts })
-            legendToggle("充电 W", $showChargingW, chargeColor, value: { $0.chargingWatts })
-            legendToggle("CPU%", $showCpu, cpuColor, value: { $0.cpuUsage * 100 })
-            legendToggle("RAM%", $showRam, ramColor, value: { $0.memoryUsage * 100 })
-            legendToggle("电压 V", $showVoltage, voltageColor, value: { $0.chargingVoltage })
-            legendToggle("电流 A", $showCurrent, currentColor, value: { $0.chargingCurrent })
+            legendToggle(L("chart.series.battery_pct"), $showBattery, batteryColor, value: { Double($0.batteryPercent) })
+            legendToggle(L("chart.series.system_w"), $showSystemW, systemColor, value: { $0.systemWatts })
+            legendToggle(L("chart.series.charging_w"), $showChargingW, chargeColor, value: { $0.chargingWatts })
+            legendToggle(L("chart.series.cpu_pct"), $showCpu, cpuColor, value: { $0.cpuUsage * 100 })
+            legendToggle(L("chart.series.ram_pct"), $showRam, ramColor, value: { $0.memoryUsage * 100 })
+            legendToggle(L("chart.series.voltage"), $showVoltage, voltageColor, value: { $0.chargingVoltage })
+            legendToggle(L("chart.series.current"), $showCurrent, currentColor, value: { $0.chargingCurrent })
             Spacer()
         }
         .font(.caption)
@@ -154,7 +158,7 @@ struct PowerChartView: View {
 
     /// 最新样本经映射后的展示文本（与悬浮提示同款 `fmtVal`）；无数据时显示 "--"。
     private func currentValueText(_ value: @escaping (PowerSample) -> Double) -> String {
-        guard let s = logger.samples.last else { return "--" }
+        guard let s = logger.samples.last else { return L("common.placeholder") }
         return ChartAxes.fmtVal(value(s))
     }
 
@@ -226,13 +230,13 @@ struct PowerChartView: View {
     /// 当前启用的系列。
     private var enabledSeries: [SeriesDef] {
         var list: [SeriesDef] = []
-        if showBattery { list.append(SeriesDef(title: "电池%", color: batteryColor, axis: .percent, dsp: { Double($0.batteryPercent) })) }
-        if showCpu { list.append(SeriesDef(title: "CPU%", color: cpuColor, axis: .percent, dsp: { $0.cpuUsage * 100 })) }
-        if showRam { list.append(SeriesDef(title: "RAM%", color: ramColor, axis: .percent, dsp: { $0.memoryUsage * 100 })) }
-        if showSystemW { list.append(SeriesDef(title: "整机 W", color: systemColor, axis: .value, dsp: { $0.systemWatts })) }
-        if showChargingW { list.append(SeriesDef(title: "充电 W", color: chargeColor, axis: .value, dsp: { $0.chargingWatts })) }
-        if showVoltage { list.append(SeriesDef(title: "电压 V", color: voltageColor, axis: .value, dsp: { $0.chargingVoltage })) }
-        if showCurrent { list.append(SeriesDef(title: "电流 A", color: currentColor, axis: .value, dsp: { $0.chargingCurrent })) }
+        if showBattery { list.append(SeriesDef(title: L("chart.series.battery_pct"), color: batteryColor, axis: .percent, dsp: { Double($0.batteryPercent) })) }
+        if showCpu { list.append(SeriesDef(title: L("chart.series.cpu_pct"), color: cpuColor, axis: .percent, dsp: { $0.cpuUsage * 100 })) }
+        if showRam { list.append(SeriesDef(title: L("chart.series.ram_pct"), color: ramColor, axis: .percent, dsp: { $0.memoryUsage * 100 })) }
+        if showSystemW { list.append(SeriesDef(title: L("chart.series.system_w"), color: systemColor, axis: .value, dsp: { $0.systemWatts })) }
+        if showChargingW { list.append(SeriesDef(title: L("chart.series.charging_w"), color: chargeColor, axis: .value, dsp: { $0.chargingWatts })) }
+        if showVoltage { list.append(SeriesDef(title: L("chart.series.voltage"), color: voltageColor, axis: .value, dsp: { $0.chargingVoltage })) }
+        if showCurrent { list.append(SeriesDef(title: L("chart.series.current"), color: currentColor, axis: .value, dsp: { $0.chargingCurrent })) }
         return list
     }
 
@@ -242,7 +246,7 @@ struct PowerChartView: View {
     }
 
     private var summaryText: String {
-        "样本 \(logger.samples.count) 个 · 查看最近 " + timeText(timeRange)
+        LP("chart.summary.samples", count: logger.samples.count, timeText(timeRange))
     }
 
     private func buildDraw(in plot: ChartPlot) -> ChartDraw {
@@ -441,11 +445,11 @@ struct PowerChartView: View {
     /// 确认后清空功率日志（内存 + 磁盘 CSV），历史不可恢复。
     private func confirmReset() {
         let alert = NSAlert()
-        alert.messageText = "重置历史数据"
-        alert.informativeText = "将清空功率日志的全部历史数据（含磁盘 CSV），且不可恢复。确定重置？"
+        alert.messageText = L("alert.reset_history.title")
+        alert.informativeText = L("alert.reset_history.message")
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "重置")
-        alert.addButton(withTitle: "取消")
+        alert.addButton(withTitle: L("common.reset"))
+        alert.addButton(withTitle: L("common.cancel"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         logger.reset()
         // 复位视图状态，回到空数据的默认视图。
@@ -461,10 +465,10 @@ struct PowerChartView: View {
         Self.windowPresets.first { $0 == timeRange }
     }
 
-    /// 底部时间窗口按钮。
-    private func windowPresetButton(_ title: String, _ seconds: TimeInterval) -> some View {
+    /// 底部时间窗口按钮。参数是**文案键名**（不是最终文案），由 L() 取。
+    private func windowPresetButton(_ key: String, _ seconds: TimeInterval) -> some View {
         let active = activeWindowPreset == seconds
-        return Button(title) { setWindow(seconds) }
+        return Button(L(key)) { setWindow(seconds) }
             .buttonStyle(.plain)
             .font(.caption.weight(active ? .semibold : .regular))
             .foregroundColor(active ? Color.accentColor : .primary)
@@ -670,12 +674,13 @@ private struct ChartDraw {
             }
         }
         // 底部时间
-        let formatter = Self.xFormatter(for: timeRange)
+        let template = Self.xTemplate(for: timeRange)
         for tick in timeTicks() {
             let xx = timeX(tick)
             if xx < plot.minX || xx > plot.maxX { continue }
             let date = Date(timeIntervalSince1970: tick)
-            let text = Text(formatter.string(from: date)).font(.system(size: 9)).foregroundColor(.gray)
+            let text = Text(LocalizedFormat.date(date, template: template))
+                .font(.system(size: 9)).foregroundColor(.gray)
             ctx.draw(text, at: CGPoint(x: xx, y: plot.maxY + 12), anchor: .top)
         }
     }
@@ -708,12 +713,14 @@ private struct ChartDraw {
         return out
     }
 
-    private static func xFormatter(for timeRange: TimeInterval) -> DateFormatter {
-        let f = DateFormatter()
-        if timeRange <= 3600 { f.dateFormat = "HH:mm:ss" }
-        else if timeRange <= 86400 { f.dateFormat = "HH:mm" }
-        else { f.dateFormat = "MM-dd HH:mm" }
-        return f
+    /// 时间轴刻度用的日期字段模板（由系统按当前区域解析，12/24 小时制与日期顺序自动适配）。
+    ///
+    /// 原先直接写死 `dateFormat`，在 12 小时制区域会得到 24 小时制文本。
+    /// ⚠️ `MMdj`（月日 + 时分）在 en_US 下比中文宽约 40%，长跨度窗口的刻度标签需真机核对密度。
+    private static func xTemplate(for timeRange: TimeInterval) -> String {
+        if timeRange <= 3600 { return "jms" }
+        if timeRange <= 86400 { return "jm" }
+        return "MMdj"
     }
 }
 

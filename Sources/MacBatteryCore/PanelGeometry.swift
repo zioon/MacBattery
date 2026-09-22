@@ -4,12 +4,17 @@ import Foundation
 public enum Corner: Int, CaseIterable {
     case topRight, topLeft, bottomRight, bottomLeft
 
-    public var label: String {
+    /// 文案键名（**不是**最终文案）。
+    ///
+    /// 刻意只给键名、不给译文：本目录是禁止 AppKit / IOKit / SwiftUI 的纯逻辑层，
+    /// 做成「给键、由 UI 层翻译」的形态后，定位几何的单测就不会因为语言而变化。
+    /// 译文见 `Sources/MacBatteryCore/Resources/<lang>.lproj/Localizable.strings`。
+    public var localizationKey: String {
         switch self {
-        case .topRight: return "右上角"
-        case .topLeft: return "左上角"
-        case .bottomRight: return "右下角"
-        case .bottomLeft: return "左下角"
+        case .topRight: return "corner.topRight"
+        case .topLeft: return "corner.topLeft"
+        case .bottomRight: return "corner.bottomRight"
+        case .bottomLeft: return "corner.bottomLeft"
         }
     }
 }
@@ -18,7 +23,14 @@ public enum Corner: Int, CaseIterable {
 public enum SizePreset: Int, CaseIterable {
     case small, medium, large
 
-    public var label: String { ["小", "中", "大"][rawValue] }
+    /// 文案键名（**不是**最终文案），理由见 `Corner.localizationKey`。
+    public var localizationKey: String {
+        switch self {
+        case .small: return "size.small"
+        case .medium: return "size.medium"
+        case .large: return "size.large"
+        }
+    }
 
     /// 相对基础尺寸的缩放系数（0.8 / 1.0 / 1.3）。
     ///

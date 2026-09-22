@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import MacBatteryCore
 
 /// 历史图表窗口：一个可缩放 / 拖拽的多系列折线图容器。
 @MainActor
@@ -26,7 +27,7 @@ final class PowerChartPanelController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        panel.title = "MacBattery 历史图表"
+        panel.title = L("window.history_chart")
         panel.isReleasedWhenClosed = false
         // 悬浮不隐藏 / 不关闭：否则点击桌面或其它窗口时图表会闪退。
         panel.hidesOnDeactivate = false
@@ -45,6 +46,14 @@ final class PowerChartPanelController: NSWindowController {
         let controller = PowerChartPanelController(window: panel, healthLogger: healthLogger)
         controller.shouldCascadeWindows = true
         return controller
+    }
+
+    /// 语言切换后刷新窗口标题。
+    ///
+    /// 窗口标题是命令式 API，不会随 SwiftUI 重绘；窗口内的文案由
+    /// `LocalizationManager` 驱动，无需在此重建视图（重建会丢掉缩放/平移状态）。
+    func refreshLocalizedText() {
+        window?.title = L("window.history_chart")
     }
 
     @available(*, unavailable)

@@ -38,17 +38,17 @@ final class MenuBarController: NSObject {
 
         let menu = NSMenu()
 
-        let settingsItem = NSMenuItem(title: "设置…", action: #selector(openSettings), keyEquivalent: ",")
+        let settingsItem = NSMenuItem(title: L("menu.settings"), action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
 
         // 历史图表
-        let chartItem = NSMenuItem(title: "历史图表…", action: #selector(openChart), keyEquivalent: "g")
+        let chartItem = NSMenuItem(title: L("menu.history_chart"), action: #selector(openChart), keyEquivalent: "g")
         chartItem.target = self
         menu.addItem(chartItem)
 
         // 电池健康（独立窗口）
-        let healthItem = NSMenuItem(title: "电池健康…", action: #selector(openHealthChart), keyEquivalent: "h")
+        let healthItem = NSMenuItem(title: L("menu.battery_health"), action: #selector(openHealthChart), keyEquivalent: "h")
         healthItem.target = self
         menu.addItem(healthItem)
 
@@ -56,10 +56,10 @@ final class MenuBarController: NSObject {
 
         // 位置子菜单
         let posItem = NSMenuItem()
-        posItem.title = "位置"
+        posItem.title = L("common.position")
         let posSub = NSMenu()
         for c in Corner.allCases {
-            let it = NSMenuItem(title: c.label, action: #selector(chooseCorner(_:)), keyEquivalent: "")
+            let it = NSMenuItem(title: L(c.localizationKey), action: #selector(chooseCorner(_:)), keyEquivalent: "")
             it.tag = c.rawValue
             it.target = self
             it.state = (!settings.hasCustom && settings.cornerRaw == c.rawValue) ? .on : .off
@@ -70,10 +70,10 @@ final class MenuBarController: NSObject {
 
         // 大小子菜单
         let sizeItem = NSMenuItem()
-        sizeItem.title = "大小"
+        sizeItem.title = L("common.size")
         let sizeSub = NSMenu()
         for p in SizePreset.allCases {
-            let it = NSMenuItem(title: p.label, action: #selector(chooseSize(_:)), keyEquivalent: "")
+            let it = NSMenuItem(title: L(p.localizationKey), action: #selector(chooseSize(_:)), keyEquivalent: "")
             it.tag = p.rawValue
             it.target = self
             it.state = (settings.sizeRaw == p.rawValue) ? .on : .off
@@ -83,18 +83,18 @@ final class MenuBarController: NSObject {
         menu.addItem(sizeItem)
 
         // 鼠标穿透开关
-        let passthroughItem = NSMenuItem(title: "鼠标穿透", action: #selector(togglePassthrough(_:)), keyEquivalent: "")
+        let passthroughItem = NSMenuItem(title: L("menu.passthrough"), action: #selector(togglePassthrough(_:)), keyEquivalent: "")
         passthroughItem.target = self
         passthroughItem.state = settings.passthrough ? .on : .off
         menu.addItem(passthroughItem)
 
         menu.addItem(.separator())
-        let updateItem = NSMenuItem(title: "检查更新…", action: #selector(checkForUpdates), keyEquivalent: "")
+        let updateItem = NSMenuItem(title: L("menu.check_updates"), action: #selector(checkForUpdates), keyEquivalent: "")
         updateItem.target = self
         menu.addItem(updateItem)
 
         menu.addItem(.separator())
-        let quitItem = NSMenuItem(title: "退出 MacBattery", action: #selector(quit), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: L("menu.quit"), action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
 

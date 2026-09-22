@@ -30,23 +30,23 @@ enum UpdateState: Equatable {
     case downloaded(version: String, fileURL: URL)
     case failed(message: String)
 
-    /// 一句话状态描述。
+    /// 一句话状态描述（随语言变化，故为计算属性而非缓存值）。
     var summary: String {
         switch self {
         case .idle:
-            return "尚未检查"
+            return L("update.state.idle")
         case .checking:
-            return "正在检查更新…"
+            return L("update.state.checking")
         case .upToDate:
-            return "已是最新版本（\(AppVersion.current)）"
+            return L("update.state.up_to_date", AppVersion.current)
         case .available(let v):
-            return "发现新版本 \(v)"
+            return L("update.state.available", v)
         case .downloading(let v, let p):
-            return "正在下载 \(v)… \(Int(p * 100))%"
+            return L("update.state.downloading", v, Int(p * 100))
         case .downloaded(let v, _):
-            return "\(v) 安装包已下载完成"
+            return L("update.state.downloaded", v)
         case .failed(let m):
-            return "更新失败：\(m)"
+            return L("update.state.failed", m)
         }
     }
 
@@ -106,7 +106,10 @@ final class UpdateChecker: NSObject, ObservableObject {
 
                 guard VersionCompare.isNewer(remote, than: AppVersion.current) else {
                     state = .upToDate
-                    if interactive { presentInfo("已是最新版本", "当前版本 \(AppVersion.current)。") }
+                    if interactive {
+                        presentInfo(L("update.alert.up_to_date.title"),
+                                    L("update.alert.up_to_date.message", AppVersion.current))
+                    }
                     return
                 }
 
@@ -114,15 +117,18 @@ final class UpdateChecker: NSObject, ObservableObject {
 
                 guard let asset = release.assets.first(where: { $0.name.lowercased().hasSuffix(".dmg") }),
                       let url = URL(string: asset.browserDownloadUrl) else {
-                    state = .failed(message: "该版本未附带 DMG")
-                    if interactive { presentError("未找到安装包", "最新版本 \(remote) 未附带 DMG 安装包。") }
+                    state = .failed(message: L("update.error.no_dmg"))
+                    if interactive {
+                        presentError(L("update.alert.no_asset.title"),
+                                     L("update.alert.no_asset.message", remote))
+                    }
                     return
                 }
 
                 startDownload(version: remote, url: url)
             } catch {
                 state = .failed(message: error.localizedDescription)
-                if interactive { presentError("检查更新失败", error.localizedDescription) }
+                if interactive { presentError(L("update.alert.check_failed.title"), error.localizedDescription) }
             }
         }
     }
@@ -151,7 +157,9 @@ final class UpdateChecker: NSObject, ObservableObject {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
         guard http.statusCode == 200 else {
-            let tip = http.statusCode == 404 ? "仓库或发布不存在" : "GitHub 返回 \(http.statusCode)"
+            let tip = http.statusCode == 404
+                ? L("update.error.repo_not_found")
+                : L("update.error.http", http.statusCode)
             throw NSError(domain: "MacBattery.Update", code: http.statusCode,
                           userInfo: [NSLocalizedDescriptionKey: tip])
         }
@@ -182,7 +190,7 @@ final class UpdateChecker: NSObject, ObservableObject {
             try FileManager.default.moveItem(at: temporaryFile, to: destination)
         } catch {
             state = .failed(message: error.localizedDescription)
-            presentError("保存安装包失败", error.localizedDescription)
+            presentError(L("update.alert.save_failed.title"), error.localizedDescription)
             return
         }
 
@@ -195,15 +203,11 @@ final class UpdateChecker: NSObject, ObservableObject {
     private func presentDownloaded(version: String, file: URL) {
         NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
-        alert.messageText = "发现新版本 \(version)"
-        alert.informativeText = """
-            安装包已自动下载到「下载」文件夹：
-            \(file.lastPathComponent)
-
-            打开 DMG 后把 MacBattery 拖入「应用程序」即可完成更新。
-            """
-        alert.addButton(withTitle: "在访达中显示")
-        alert.addButton(withTitle: "稍后")
+        alert.messageText = L("update.alert.downloaded.title", version)
+        // 正文含换行，换行由资源文件的 \n 转义承担（原先写成多行字面量）。
+        alert.informativeText = L("update.alert.downloaded.message", file.lastPathComponent)
+        alert.addButton(withTitle: L("update.alert.show_in_finder"))
+        alert.addButton(withTitle: L("update.alert.later"))
         if alert.runModal() == .alertFirstButtonReturn {
             NSWorkspace.shared.activateFileViewerSelecting([file])
         }
@@ -214,7 +218,7 @@ final class UpdateChecker: NSObject, ObservableObject {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
-        alert.addButton(withTitle: "好的")
+        alert.addButton(withTitle: L("common.ok"))
         alert.runModal()
     }
 
@@ -224,7 +228,7 @@ final class UpdateChecker: NSObject, ObservableObject {
         alert.alertStyle = .warning
         alert.messageText = title
         alert.informativeText = message
-        alert.addButton(withTitle: "好的")
+        alert.addButton(withTitle: L("common.ok"))
         alert.runModal()
     }
 }
@@ -265,7 +269,7 @@ extension UpdateChecker: URLSessionDownloadDelegate {
         Task { @MainActor in
             self.downloadTask = nil
             self.state = .failed(message: error.localizedDescription)
-            self.presentError("下载更新失败", error.localizedDescription)
+            self.presentError(L("update.alert.download_failed.title"), error.localizedDescription)
         }
     }
 }
