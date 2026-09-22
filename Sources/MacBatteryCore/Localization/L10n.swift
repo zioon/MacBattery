@@ -1,5 +1,14 @@
 import Foundation
 
+/// 用于定位「本模块所在的 bundle」的空类。
+///
+/// SwiftPM 生成的 `Bundle.module` 访问器正是靠 `Bundle(for: BundleFinder.self).resourceURL`
+/// 找到资源 bundle 的 —— 这是 `swift test` 场景下**唯一**有效的一路：此时进程是 Xcode 里的
+/// `xctest` 工具，`Bundle.main` 指向 `/Applications/Xcode.app/Contents/Developer/usr`，
+/// 资源 bundle 却随 `.xctest` 一起放在它的 `Contents/Resources` 下。
+/// 我们复制这一路（但不碰会 `fatalError` 的 `Bundle.module`）。
+private final class ResourceBundleFinder {}
+
 /// 多语言引擎。
 ///
 /// 三条设计要点：
@@ -220,29 +229,42 @@ public final class L10n {
 
     /// 可能存放 `.lproj` 的目录，按优先级排列。
     ///
-    /// 三种运行形态的资源位置都不同，这里逐个覆盖（都不依赖会 fatalError 的 `Bundle.module`）：
+    /// 三种运行形态的资源位置都不同，这里逐个覆盖（都不依赖会 `fatalError` 的 `Bundle.module`）：
     /// - **`.app`**：`Contents/Resources/<lang>.lproj`（主路径，CI 会直接放这里）；
     /// - **裸二进制 `swift run`**：资源 bundle 与可执行文件同在 `.build/<triple>/<config>/`，
     ///   即 `Bundle.main.bundleURL`；
-    /// - **`swift test`**：`Bundle.main` 未必是测试 bundle（`xctest` 工具可能才是 main），
-    ///   资源 bundle 与 `.xctest` **同级**，所以父目录必须查；`swift test` 还会通过
-    ///   `PACKAGE_RESOURCE_BUNDLE_PATH` 环境变量指出资源 bundle 的位置（SwiftPM 生成的
-    ///   访问器在 DEBUG 下也读它），也一并采纳。
+    /// - **`swift test`**：**实测**（CI 里打印出来的）`Bundle.main` 指向的是 Xcode 自带的
+    ///   `xctest` 工具（`/Applications/Xcode*.app/Contents/Developer/usr[/bin]`），资源 bundle
+    ///   根本不在 `Bundle.main` 一侧；真正有效的一路是 `Bundle(for: ResourceBundleFinder.self)`
+    ///   —— 也就是 `.xctest` bundle 及其 `Contents/Resources`。`PACKAGE_RESOURCE_BUNDLE_PATH`
+    ///   在本机 CI 上**未被设置**，保留它只是兜底。
     ///
     /// 每个目录下再按「名字以 `MacBatteryCore.bundle` 结尾」通配一层 —— 这样就不必猜
     /// SwiftPM 用的是包名（`MacBattery_`）还是小写的包标识（`macbattery_`）。
     private static func resourceHosts() -> [URL] {
         var hosts: [URL] = []
+
+        // ① .app：Contents/Resources（CI 会把 .lproj 直接放这里）。
         if let resources = Bundle.main.resourceURL { hosts.append(resources) }
+        // ② 裸二进制 swift run：可执行文件所在目录。
         hosts.append(Bundle.main.bundleURL)
         hosts.append(Bundle.main.bundleURL.deletingLastPathComponent())
 
+        // ③ 本模块所在的 bundle —— swift test 场景唯一有效的一路（见 ResourceBundleFinder 说明）。
+        let moduleBundle = Bundle(for: ResourceBundleFinder.self)
+        if let resources = moduleBundle.resourceURL { hosts.append(resources) }
+        hosts.append(moduleBundle.bundleURL)
+        hosts.append(moduleBundle.bundleURL.deletingLastPathComponent())
+
+        // ④ SwiftPM 在 DEBUG 下会用它指出资源 bundle 的位置（生成的访问器也读这个变量）。
         if let override = ProcessInfo.processInfo.environment["PACKAGE_RESOURCE_BUNDLE_PATH"] {
             let url = URL(fileURLWithPath: override)
             hosts.append(url)
             hosts.append(url.deletingLastPathComponent())
         }
 
+        // ⑤ 每个目录下再接受「名字以 MacBatteryCore.bundle 结尾」的条目 ——
+        //    这样不必猜 SwiftPM 用的是包名（MacBattery_）还是小写的包标识（macbattery_）。
         let bases = hosts
         for base in bases {
             let entries = (try? FileManager.default.contentsOfDirectory(atPath: base.path)) ?? []
