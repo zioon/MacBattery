@@ -3,6 +3,10 @@ import PackageDescription
 
 let package = Package(
     name: "MacBattery",
+    // 声明默认语言（开发语言）：SwiftPM 在 target 含本地化资源（*.lproj）时**强制要求**该字段，
+    // 否则 manifest 解析阶段就报 "manifest property 'defaultLocalization' not set"。
+    // 取 zh-Hans 与 `AppLanguage.fallback` 一致：既有界面文案都是中文，译文缺失时回退到它。
+    defaultLocalization: "zh-Hans",
     platforms: [
         .macOS(.v12)
     ],
