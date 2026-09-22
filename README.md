@@ -64,6 +64,25 @@ swift build -c release --arch arm64   # 按你的架构调整
 
 ---
 
+## 语言（国际化）
+
+- **支持语言**：简体中文（默认语言，同时是回退目标）、English。在设置窗口顶部的「语言」里切换，
+  **即时生效、无需重启**；选择持久化在 `MacBattery.Settings.language`，不写入 `AppleLanguages`、不改系统偏好。
+- **首次启动**：按系统首选语言自动匹配（`en-*` → English，`zh-CN` / `zh-Hans-*` → 简体中文）；
+  都不匹配时使用默认语言简体中文（繁体 `zh-Hant-*` 属第二批候选，当前回退到简体）。
+- **回退机制**：某条文案在所选语言缺失时回退到默认语言；两处都缺时显示键名并写入日志 —— 不崩溃、不留空白。
+- **数字与日期按区域格式化**：小数分隔符、12/24 小时制、日期顺序都随语言（英文区域用 12 小时制）。
+- **新增文案**：代码里写 `L("your.key")`，再到 `Sources/MacBatteryCore/Resources/<lang>.lproj/Localizable.strings` 补条目；
+  复数用 `<key>.one` / `<key>.other` 后缀。漏翻译不会让界面出问题，但会让 CI 的键名一致性测试失败。
+- **改文案时的铁律**：SwiftUI 里必须写 `Text(L("key"))`，**不要**写 `Text("中文")` ——
+  字面量会被当成 `LocalizedStringKey` 走 `Bundle.main`，绕过应用内的语言选择，表现为「切了语言这一处不变」。
+  CI 的 `Scripts/check_hardcoded_strings.py` 会拦下这类残留；`logger.error(...)` 等日志调用里的中文属**刻意保留**
+  （日志面向排查，本地化后同一条故障在不同语言下文本不同、无法检索），脚本按调用形态豁免。
+- **CI 还会跑 `Scripts/check_localization_keys.py`**：校验各语言键名一致（漏翻译即失败）、格式占位符数量一致、
+  以及代码里引用的键确实存在（`L("拼错的键")` 在运行时会在界面上显示键名，靠这个提前拦住）。
+
+---
+
 ## 在线自动更新
 
 - **启动时自动检查**：查询 GitHub Releases（`zioon/MacBattery`）最新版本，与当前版本比对。
@@ -136,7 +155,7 @@ DMG 内已附带 `macbattery-helper` 二进制与 `install_helper.sh`，解压�
 Sources/
 ├── MacBattery/
 │   ├── main.swift                  # 入口
-│   ├── AppSettings.swift           # 设置项持久化
+│   ├── AppSettings.swift           # 设置项持久化（含界面语言）
 │   ├── FloatingPanel.swift         # 置顶透明穿透浮窗 + 位置
 │   ├── PowerHUDView.swift          # 电量圆环 + CPU/RAM 半环 + 两行功率 UI
 │   ├── PowerMonitor.swift          # 后台采样 + 结果发布（SMC/IOKit 不阻塞 UI）
@@ -148,9 +167,16 @@ Sources/
 │   ├── BatteryHealthChartView.swift# 电池健康图表
 │   ├── BatteryHealthPanelController.swift
 │   ├── SettingsView.swift          # 设置面板
+│   ├── SettingsWindowController.swift
+│   ├── LocalizationManager.swift   # 界面语言运行时状态（语言变化驱动重绘）
 │   ├── Updater.swift               # 在线自动更新（GitHub Releases + DMG 下载）
 │   ├── SMC.swift                   # AppleSMC 整机功率读取
 │   └── SystemPower.swift           # 整机功率数据源（含估算 / 真实 helper 值）
+├── MacBatteryCore/                 # 纯逻辑层（禁止 AppKit/IOKit/SwiftUI，可独立单测）
+│   ├── Localization/               # 多语言引擎：语言解析、三级回退、区域化数字/日期
+│   └── Resources/
+│       ├── zh-Hans.lproj/Localizable.strings   # 简体中文（默认语言 / 回退目标）
+│       └── en.lproj/Localizable.strings        # English
 ├── MacBatteryHelper/
 │   └── main.swift                  # root helper 守护（真实整机功率）
 └── SMCBridge/
@@ -158,6 +184,8 @@ Sources/
     └── include/SMC.h
 Scripts/
 ├── install_helper.sh               # 安装 root helper
+├── check_hardcoded_strings.py      # CI 守护：拦截界面层残留的硬编码文案
+├── check_localization_keys.py      # CI 守护：键名一致性 / 占位符漂移 / 引用了不存在的键
 └── make_icon.py                    # 生成应用图标
 Resources/
 └── AppIcon.icns                    # 应用图标
