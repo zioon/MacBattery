@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-09-22
+
+### 修复
+
+- **启动即崩溃（v1.2.0 引入）**：定位语言资源时的第一个候选是 SwiftPM 的 `Bundle.module`，
+  而该访问器在找不到资源 bundle 时走的是 `fatalError` —— 资源布局一旦与预期不符，应用就会在
+  `applicationDidFinishLaunching` 阶段直接 SIGILL（`EXC_BAD_INSTRUCTION`），表现为「一打开就闪退」。
+  现改为**纯查询式**搜索（`.app` 的 `Contents/Resources` → 可执行文件所在目录 → SwiftPM 资源 bundle），
+  任何一环缺失都只是返回 `nil` 并回退到默认语言、再回退到键名，**绝不让「找不到翻译」升级成「应用起不来」**。
+- 打包时多语言资源改为**双份落位**：`Contents/Resources/<lang>.lproj`（macOS 标准布局，同时让
+  `CFBundleLocalizations` 真正生效）+ SwiftPM 资源 bundle（`swift run` 用）。原先只放了后者，
+  而 `Bundle.module` 的查找位置与实际布局不一致。
+
+### 其他
+
+- CI 新增**启动冒烟测试**：`.app` 组装完成后直接运行二进制，8 秒后进程仍在才算通过。
+  上一版的门禁只断言「资源文件被拷进了 `.app`」，没有验证「App 真能起来」，因此把这个崩溃放行了。
+
 ## [1.2.0] - 2026-09-22
 
 ### 新增

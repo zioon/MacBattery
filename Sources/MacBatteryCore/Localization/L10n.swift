@@ -198,22 +198,55 @@ public final class L10n {
         return LocalizationTable(language: language, entries: dict)
     }
 
-    /// 定位某语言的 `.lproj` bundle。
+    /// SwiftPM 资源 bundle 的候选名字（大小写两种都试）。
+    ///
+    /// SwiftPM 的命名是 `<PackageName>_<TargetName>.bundle`，而包标识在 manifest 层是小写的
+    /// （报错信息里出现的是 `macbattery`）—— 本机没有 Swift 工具链，无法事先验证到底是哪种。
+    /// 多试一次只是一个 `fileExists`，比猜错便宜得多。
+    private static let resourceBundleNames = [
+        "MacBattery_MacBatteryCore.bundle",
+        "macbattery_MacBatteryCore.bundle"
+    ]
+
+    /// 定位某语言的 `.lproj`。
+    ///
+    /// ⚠️ **刻意不使用 `Bundle.module`**：SwiftPM 生成的访问器在找不到资源 bundle 时走的是
+    /// `fatalError`（表现为 `_assertionFailure` → SIGILL）。v1.2.0 正是把它放在候选列表里，
+    /// 于是在 `applicationDidFinishLaunching` 阶段直接崩掉 —— 崩溃栈就是
+    /// `closure #1 in variable initialization expression of static NSBundle.module`。
+    /// 这里改成**纯查询式**搜索：任何一环缺失都只返回 nil，由三级回退兜住（界面显示键名），
+    /// 绝不让「找不到翻译」升级成「应用起不来」。
     static func bundle(for language: AppLanguage) -> Bundle? {
-        let candidates: [Bundle] = [Bundle.module, Bundle.main]
-        for host in candidates {
-            if let url = host.url(forResource: language.rawValue, withExtension: "lproj"),
-               let bundle = Bundle(url: url) {
-                return bundle
-            }
-            if let base = host.resourceURL {
-                let url = base.appendingPathComponent("\(language.rawValue).lproj")
-                if let bundle = Bundle(url: url), bundle.bundlePath.hasSuffix(".lproj") {
-                    return bundle
-                }
-            }
+        for host in resourceHosts() {
+            let url = host.appendingPathComponent("\(language.rawValue).lproj")
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue,
+                  let bundle = Bundle(url: url) else { continue }
+            return bundle
         }
         return nil
+    }
+
+    /// 可能存放 `.lproj` 的目录，按优先级排列。
+    ///
+    /// - ① `.app` 的 `Contents/Resources`：CI 会把 `.lproj` 直接放这里（macOS 标准做法，
+    ///   同时让 `CFBundleLocalizations` 真正生效）。
+    /// - ② `Bundle.main.bundleURL`：裸二进制（`swift run`）时是可执行文件所在目录。
+    /// - ③ SwiftPM 资源 bundle 内部（`swift run` 与打包布局都可能有）。
+    private static func resourceHosts() -> [URL] {
+        var hosts: [URL] = []
+        if let resources = Bundle.main.resourceURL { hosts.append(resources) }
+        hosts.append(Bundle.main.bundleURL)
+
+        let bases = hosts
+        for base in bases {
+            for name in resourceBundleNames {
+                let url = base.appendingPathComponent(name)
+                if FileManager.default.fileExists(atPath: url.path) { hosts.append(url) }
+            }
+        }
+        return hosts
     }
 }
 
