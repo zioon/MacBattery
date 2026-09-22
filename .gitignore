@@ -3,3 +3,5 @@
 dist/
 *.dmg
 .DS_Store
+.trae/
+.workbuddy/

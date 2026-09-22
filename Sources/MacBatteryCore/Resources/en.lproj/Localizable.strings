@@ -1,0 +1,139 @@
+/* MacBattery English strings
+ *
+ * Conventions (must match zh-Hans.lproj/Localizable.strings key for key):
+ * 1. Missing keys fall back to the default language (Simplified Chinese) at runtime,
+ *    but a missing key also fails the key-parity test in CI — so always add both.
+ * 2. Plurals use <key>.one / <key>.other. English needs both.
+ * 3. Format strings use String(format:) syntax; arguments are locale-formatted.
+ * 4. language.* holds language autonyms (简体中文 / English) — do NOT translate.
+ */
+
+/* Common */
+"common.position" = "Position";
+"common.size" = "Size";
+"common.all" = "All";
+"common.reset_data" = "Reset data";
+"common.reset" = "Reset";
+"common.cancel" = "Cancel";
+"common.ok" = "OK";
+
+/* Language picker (autonyms, do not translate) */
+"language.system" = "System";
+"language.zh-Hans" = "简体中文";
+"language.en" = "English";
+
+/* Menu bar */
+"menu.settings" = "Settings…";
+"menu.history_chart" = "History chart…";
+"menu.battery_health" = "Battery health…";
+"menu.passthrough" = "Click-through";
+"menu.check_updates" = "Check for updates…";
+"menu.quit" = "Quit MacBattery";
+
+/* Window titles */
+"window.settings" = "MacBattery Settings";
+"window.history_chart" = "MacBattery History Chart";
+"window.battery_health" = "MacBattery Battery Health";
+
+/* Settings window */
+"settings.language" = "Language";
+"settings.custom_position_hint" = "Using a custom position (drag the widget or pick a corner to change)";
+"settings.passthrough_toggle" = "Click-through (cannot be dragged while on)";
+"settings.tdp.title" = "System power cap (TDP)";
+"settings.tdp.value" = "%d W";
+"settings.tdp.hint.estimate" = "macOS does not report measured system power on Intel Macs, so it is estimated from the model's maximum draw.";
+"settings.tdp.hint.calibrate" = "Set it close to your model's rated draw (28W for thin laptops, 45W for standard-voltage U, 60W+ for H series) to make the reading more realistic.";
+"settings.tdp.hint.tilde" = "A `~` prefix on the widget's system power means the value is an estimate; install the root helper to read the real value (see README).";
+"settings.version.current" = "Version %@";
+"settings.check_update" = "Check for updates";
+"settings.update.auto_hint" = "Checks automatically at launch and downloads a new DMG into your Downloads folder.";
+"settings.done" = "Done";
+
+/* History chart */
+"chart.history.axis_hint" = "Left: %  ·  Right: W / V / A";
+"chart.series.battery_pct" = "Batt %";
+"chart.series.system_w" = "Sys W";
+"chart.series.charging_w" = "Chg W";
+"chart.series.cpu_pct" = "CPU %";
+"chart.series.ram_pct" = "RAM %";
+"chart.series.voltage" = "Voltage V";
+"chart.series.current" = "Current A";
+"chart.window.5m" = "5m";
+"chart.window.30m" = "30m";
+"chart.window.1h" = "1h";
+"chart.window.24h" = "24h";
+"chart.summary.samples.one" = "%d sample · last %@";
+"chart.summary.samples.other" = "%d samples · last %@";
+"alert.reset_history.title" = "Reset history data";
+"alert.reset_history.message" = "This clears all power log history (including the CSV on disk) and cannot be undone. Reset?";
+
+/* Battery health chart */
+"health.metric.max_capacity" = "Current max capacity";
+"health.metric.design_capacity" = "Design capacity";
+"health.metric.health_pct" = "Battery health";
+"health.metric.cycles" = "Cycle count";
+"health.unit.mah" = "%d mAh";
+"health.unit.mah.short" = "mAh";
+"health.unit.pct.sign" = "%";
+"health.unit.cycles.one" = "%d cycle";
+"health.unit.cycles.other" = "%d cycles";
+"health.unit.pct" = "%@%%";
+"health.axis_hint" = "Left: mAh  ·  Right: %";
+"health.window.1d" = "1d";
+"health.window.1w" = "1w";
+"health.window.1m" = "1mo";
+"health.window.1q" = "1q";
+"health.window.1y" = "1y";
+"health.empty_placeholder" = "No health data yet (samples accumulate while the app runs)";
+"alert.reset_health.title" = "Reset health data";
+"alert.reset_health.message" = "This clears all battery health log history (including the CSV on disk) and cannot be undone. Reset?";
+
+/* Widget HUD */
+"hud.unit.watts" = "W";
+"hud.used_prefix" = "Used %@";
+"hud.remaining_prefix" = "Left %@";
+"hud.estimating" = "Estimating…";
+"hud.voltage_amps" = "%@V · %@A";
+"hud.voltage_amps.placeholder" = "--V · --A";
+"common.placeholder" = "--";
+"hud.zero" = "0";
+
+/* Durations (axis labels / window summary) */
+"duration.seconds.one" = "%d second";
+"duration.seconds.other" = "%d seconds";
+"duration.minutes.one" = "%d minute";
+"duration.minutes.other" = "%d minutes";
+"duration.hours" = "%@ hours";
+"duration.days" = "%@ days";
+
+/* Online updates */
+"update.state.idle" = "Not checked yet";
+"update.state.checking" = "Checking for updates…";
+"update.state.up_to_date" = "Up to date (%@)";
+"update.state.available" = "Version %@ available";
+"update.state.downloading" = "Downloading %@… %d%%";
+"update.state.downloaded" = "%@ downloaded";
+"update.state.failed" = "Update failed: %@";
+"update.alert.up_to_date.title" = "Up to date";
+"update.alert.up_to_date.message" = "Current version %@.";
+"update.error.no_dmg" = "This release has no DMG";
+"update.alert.no_asset.title" = "No installer found";
+"update.alert.no_asset.message" = "Version %@ does not include a DMG installer.";
+"update.alert.check_failed.title" = "Update check failed";
+"update.error.repo_not_found" = "Repository or release not found";
+"update.error.http" = "GitHub returned %d";
+"update.alert.save_failed.title" = "Could not save the installer";
+"update.alert.downloaded.title" = "Version %@ available";
+"update.alert.downloaded.message" = "The installer was downloaded to your Downloads folder:\n%@\n\nOpen the DMG and drag MacBattery into Applications to finish updating.";
+"update.alert.show_in_finder" = "Show in Finder";
+"update.alert.later" = "Later";
+"update.alert.download_failed.title" = "Update download failed";
+
+/* Position and size presets */
+"corner.topRight" = "Top right";
+"corner.topLeft" = "Top left";
+"corner.bottomRight" = "Bottom right";
+"corner.bottomLeft" = "Bottom left";
+"size.small" = "Small";
+"size.medium" = "Medium";
+"size.large" = "Large";

@@ -1,0 +1,137 @@
+/* MacBattery 简体中文文案（默认语言 / 开发语言）
+ *
+ * 约定：
+ * 1. 本文件是「默认语言」，同时也是翻译缺失时的回退目标。任何新增文案都应先加到这里。
+ * 2. 键名在 zh-Hans / en 两个文件中必须完全一致（不一致会让 CI 的
+ *    LocalizationTests 直接失败，运行时则静默回退到本文件的中文）。
+ * 3. 复数形式用 <key>.one / <key>.other 后缀；中文没有复数变化，只写 .other。
+ * 4. 格式串沿用 String(format:) 语法。参数由 L()/LP() 传入时按当前区域格式化。
+ *    不含参数的文案里出现字面 % 是安全的，不需要写成 %%。
+ * 5. language.* 三个键是语言自名（简体中文 / English），**不要翻译**。
+ */
+
+/* 通用 */
+"common.position" = "位置";
+"common.size" = "大小";
+"common.all" = "全部";
+"common.reset_data" = "重置数据";
+"common.reset" = "重置";
+"common.cancel" = "取消";
+"common.ok" = "好的";
+
+/* 语言选择（language.* 为语言自名，请勿翻译） */
+"language.system" = "跟随系统";
+"language.zh-Hans" = "简体中文";
+"language.en" = "English";
+
+/* 菜单栏 */
+"menu.settings" = "设置…";
+"menu.history_chart" = "历史图表…";
+"menu.battery_health" = "电池健康…";
+"menu.passthrough" = "鼠标穿透";
+"menu.check_updates" = "检查更新…";
+"menu.quit" = "退出 MacBattery";
+
+/* 窗口标题 */
+"window.settings" = "MacBattery 设置";
+"window.history_chart" = "MacBattery 历史图表";
+"window.battery_health" = "MacBattery 电池健康";
+
+/* 设置窗口 */
+"settings.language" = "语言";
+"settings.custom_position_hint" = "已在自定义位置（拖动挂件/重选四角可更改）";
+"settings.passthrough_toggle" = "鼠标穿透（开启后不可拖动）";
+"settings.tdp.title" = "整机功率估算上限 (TDP)";
+"settings.tdp.value" = "%d W";
+"settings.tdp.hint.estimate" = "整机功率在 Intel 机型上 macOS 不提供实测值，这里按机型最大功耗估算。";
+"settings.tdp.hint.calibrate" = "把它调到接近你机型的额定功耗（如轻薄本 28W、标压 U 45W、H 系 60W+），整机功率会更贴近真实。";
+"settings.tdp.hint.tilde" = "挂件上整机功率数字带 `~` 前缀时表示那是估算值；安装 root helper 后可读到真实值（见 README）。";
+"settings.version.current" = "当前版本 %@";
+"settings.check_update" = "检查更新";
+"settings.update.auto_hint" = "启动时会自动检查，发现新版本将自动下载 DMG 到「下载」文件夹。";
+"settings.done" = "完成";
+
+/* 历史图表 */
+"chart.history.axis_hint" = "左轴：%  ·  右轴：W / V / A";
+"chart.series.battery_pct" = "电池%";
+"chart.series.system_w" = "整机 W";
+"chart.series.charging_w" = "充电 W";
+"chart.series.cpu_pct" = "CPU%";
+"chart.series.ram_pct" = "RAM%";
+"chart.series.voltage" = "电压 V";
+"chart.series.current" = "电流 A";
+"chart.window.5m" = "5m";
+"chart.window.30m" = "30m";
+"chart.window.1h" = "1h";
+"chart.window.24h" = "24h";
+"chart.summary.samples.other" = "样本 %d 个 · 查看最近 %@";
+"alert.reset_history.title" = "重置历史数据";
+"alert.reset_history.message" = "将清空功率日志的全部历史数据（含磁盘 CSV），且不可恢复。确定重置？";
+
+/* 电池健康图表 */
+"health.metric.max_capacity" = "当前最大容量";
+"health.metric.design_capacity" = "设计容量";
+"health.metric.health_pct" = "电池健康度";
+"health.metric.cycles" = "循环次数";
+"health.unit.mah" = "%d mAh";
+"health.unit.mah.short" = "mAh";
+"health.unit.pct.sign" = "%";
+"health.unit.cycles.other" = "%d 次";
+"health.unit.pct" = "%@%%";
+"health.axis_hint" = "左轴：mAh  ·  右轴：%";
+"health.window.1d" = "1d";
+"health.window.1w" = "1w";
+"health.window.1m" = "1m";
+"health.window.1q" = "1q";
+"health.window.1y" = "1y";
+"health.empty_placeholder" = "暂无健康数据（应用运行后会随采样累积）";
+"alert.reset_health.title" = "重置健康数据";
+"alert.reset_health.message" = "将清空电池健康日志的全部历史数据（含磁盘 CSV），且不可恢复。确定重置？";
+
+/* 挂件 HUD */
+"hud.unit.watts" = "W";
+"hud.used_prefix" = "已用 %@";
+"hud.remaining_prefix" = "剩余 %@";
+"hud.estimating" = "估算中…";
+"hud.voltage_amps" = "%@V · %@A";
+"hud.voltage_amps.placeholder" = "--V · --A";
+"common.placeholder" = "--";
+"hud.zero" = "0";
+
+/* 时长（坐标轴 / 时间窗摘要） */
+"duration.seconds.other" = "%d 秒";
+"duration.minutes.other" = "%d 分钟";
+"duration.hours" = "%@ 小时";
+"duration.days" = "%@ 天";
+
+/* 在线更新 */
+"update.state.idle" = "尚未检查";
+"update.state.checking" = "正在检查更新…";
+"update.state.up_to_date" = "已是最新版本（%@）";
+"update.state.available" = "发现新版本 %@";
+"update.state.downloading" = "正在下载 %@… %d%%";
+"update.state.downloaded" = "%@ 安装包已下载完成";
+"update.state.failed" = "更新失败：%@";
+"update.alert.up_to_date.title" = "已是最新版本";
+"update.alert.up_to_date.message" = "当前版本 %@。";
+"update.error.no_dmg" = "该版本未附带 DMG";
+"update.alert.no_asset.title" = "未找到安装包";
+"update.alert.no_asset.message" = "最新版本 %@ 未附带 DMG 安装包。";
+"update.alert.check_failed.title" = "检查更新失败";
+"update.error.repo_not_found" = "仓库或发布不存在";
+"update.error.http" = "GitHub 返回 %d";
+"update.alert.save_failed.title" = "保存安装包失败";
+"update.alert.downloaded.title" = "发现新版本 %@";
+"update.alert.downloaded.message" = "安装包已自动下载到「下载」文件夹：\n%@\n\n打开 DMG 后把 MacBattery 拖入「应用程序」即可完成更新。";
+"update.alert.show_in_finder" = "在访达中显示";
+"update.alert.later" = "稍后";
+"update.alert.download_failed.title" = "下载更新失败";
+
+/* 位置与尺寸预设 */
+"corner.topRight" = "右上角";
+"corner.topLeft" = "左上角";
+"corner.bottomRight" = "右下角";
+"corner.bottomLeft" = "左下角";
+"size.small" = "小";
+"size.medium" = "中";
+"size.large" = "大";
