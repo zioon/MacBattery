@@ -230,14 +230,20 @@ public final class L10n {
 
     /// 可能存放 `.lproj` 的目录，按优先级排列。
     ///
-    /// - ① `.app` 的 `Contents/Resources`：CI 会把 `.lproj` 直接放这里（macOS 标准做法，
-    ///   同时让 `CFBundleLocalizations` 真正生效）。
-    /// - ② `Bundle.main.bundleURL`：裸二进制（`swift run`）时是可执行文件所在目录。
-    /// - ③ SwiftPM 资源 bundle 内部（`swift run` 与打包布局都可能有）。
+    /// 三种运行形态的资源位置都不同，这里逐个覆盖（都不依赖会 fatalError 的 `Bundle.module`）：
+    /// - **`.app`**：`Contents/Resources/<lang>.lproj`（主路径，CI 会直接放这里）；
+    /// - **裸二进制 `swift run`**：资源 bundle 与可执行文件同在 `.build/<config>/`，
+    ///   即 `Bundle.main.bundleURL`；
+    /// - **`swift test`**：`Bundle.main` 是 `.build/<config>/MacBatteryPackageTests.xctest`，
+    ///   而资源 bundle 与它**同级**，因此还要查 `bundleURL` 的父目录。
+    ///
+    /// 另外每种目录下都再试一层 SwiftPM 资源 bundle（`<PackageName>_<TargetName>.bundle`），
+    /// 兼容既有打包布局。
     private static func resourceHosts() -> [URL] {
         var hosts: [URL] = []
         if let resources = Bundle.main.resourceURL { hosts.append(resources) }
         hosts.append(Bundle.main.bundleURL)
+        hosts.append(Bundle.main.bundleURL.deletingLastPathComponent())
 
         let bases = hosts
         for base in bases {
@@ -246,7 +252,9 @@ public final class L10n {
                 if FileManager.default.fileExists(atPath: url.path) { hosts.append(url) }
             }
         }
-        return hosts
+
+        var seen = Set<String>()
+        return hosts.filter { seen.insert($0.standardizedFileURL.path).inserted }
     }
 }
 
