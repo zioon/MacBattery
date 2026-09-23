@@ -11,6 +11,12 @@ final class SettingsStore: ObservableObject {
     @Published var cornerRaw: Int
     @Published var tdpWatts: Double
     @Published var passthrough: Bool
+    /// 是否显示桌面挂件。**默认显示**（老用户升级后行为不变）。
+    ///
+    /// 隐藏只摘掉浮窗本身：采样、日志、充电上限等后台功能一律照常运行
+    ///（它们由 `PowerMonitor` 驱动，与窗口可见性无关），因此不存在
+    ///「把挂件藏起来 → 充电上限失效 → 电充不满」这条路径。
+    @Published var widgetVisible: Bool
     @Published var hasCustom: Bool
     @Published var customX: Double
     @Published var customY: Double
@@ -32,6 +38,9 @@ final class SettingsStore: ObservableObject {
         cornerRaw = d.integer(forKey: Self.key("corner"))
         tdpWatts = (d.object(forKey: Self.key("tdp")) as? Double) ?? 45
         passthrough = (d.object(forKey: Self.key("passthrough")) as? Bool) ?? true
+        // 可见性同 passthrough 一样用 object(forKey:) 而不是 bool(forKey:)：
+        // 后者对缺失键返回 false，会让所有老用户升级后挂件**直接消失**且找不到原因。
+        widgetVisible = (d.object(forKey: Self.key("widgetVisible")) as? Bool) ?? true
         hasCustom = d.bool(forKey: Self.key("hasCustom"))
         customX = d.double(forKey: Self.key("cx"))
         customY = d.double(forKey: Self.key("cy"))
@@ -61,6 +70,7 @@ final class SettingsStore: ObservableObject {
         d.set(cornerRaw, forKey: Self.key("corner"))
         d.set(tdpWatts, forKey: Self.key("tdp"))
         d.set(passthrough, forKey: Self.key("passthrough"))
+        d.set(widgetVisible, forKey: Self.key("widgetVisible"))
         d.set(hasCustom, forKey: Self.key("hasCustom"))
         d.set(customX, forKey: Self.key("cx"))
         d.set(customY, forKey: Self.key("cy"))

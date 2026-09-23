@@ -10,6 +10,7 @@ protocol MenuBarDelegate: AnyObject {
     func menuChooseCorner(_ rawValue: Int)
     func menuChooseSize(_ rawValue: Int)
     func menuTogglePassthrough()
+    func menuToggleWidget()
     func menuToggleChargeLimit()
     func menuCheckForUpdates()
 }
@@ -83,6 +84,13 @@ final class MenuBarController: NSObject {
         sizeItem.submenu = sizeSub
         menu.addItem(sizeItem)
 
+        // 挂件显隐开关：挂件隐藏后菜单栏图标仍在，所以这里必须是**回到挂件的唯一入口**，
+        // 不能把它藏进子菜单或让它随挂件一起消失。
+        let widgetItem = NSMenuItem(title: L("menu.widget"), action: #selector(toggleWidget(_:)), keyEquivalent: "")
+        widgetItem.target = self
+        widgetItem.state = settings.widgetVisible ? .on : .off
+        menu.addItem(widgetItem)
+
         // 鼠标穿透开关
         let passthroughItem = NSMenuItem(title: L("menu.passthrough"), action: #selector(togglePassthrough(_:)), keyEquivalent: "")
         passthroughItem.target = self
@@ -116,6 +124,7 @@ final class MenuBarController: NSObject {
     @objc private func chooseCorner(_ sender: NSMenuItem) { delegate?.menuChooseCorner(sender.tag) }
     @objc private func chooseSize(_ sender: NSMenuItem) { delegate?.menuChooseSize(sender.tag) }
     @objc private func togglePassthrough(_ sender: NSMenuItem) { delegate?.menuTogglePassthrough() }
+    @objc private func toggleWidget(_ sender: NSMenuItem) { delegate?.menuToggleWidget() }
     @objc private func toggleChargeLimit(_ sender: NSMenuItem) { delegate?.menuToggleChargeLimit() }
     @objc private func checkForUpdates() { delegate?.menuCheckForUpdates() }
     @objc private func quit() { NSApp.terminate(nil) }

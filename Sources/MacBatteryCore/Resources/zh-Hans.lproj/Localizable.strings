@@ -28,6 +28,7 @@
 "menu.settings" = "设置…";
 "menu.history_chart" = "历史图表…";
 "menu.battery_health" = "电池健康…";
+"menu.widget" = "显示挂件";
 "menu.passthrough" = "鼠标穿透";
 "menu.charge_limit" = "充电上限（%d%%）";
 "menu.check_updates" = "检查更新…";
@@ -40,6 +41,8 @@
 
 /* 设置窗口 */
 "settings.language" = "语言";
+"settings.widget_toggle" = "显示挂件";
+"settings.widget_hint" = "隐藏后可从菜单栏图标或本设置重新打开；采样、日志与充电上限仍在后台照常运行。";
 "settings.custom_position_hint" = "已在自定义位置（拖动挂件/重选四角可更改）";
 "settings.passthrough_toggle" = "鼠标穿透（开启后不可拖动）";
 "settings.tdp.title" = "整机功率估算上限 (TDP)";

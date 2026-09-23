@@ -25,25 +25,37 @@ struct SettingsView: View {
                 }
             }
 
-            Picker(L("common.size"), selection: $store.sizeRaw) {
-                ForEach(SizePreset.allCases, id: \.rawValue) { preset in
-                    Text(L(preset.localizationKey)).tag(preset.rawValue)
-                }
-            }
+            Toggle(L("settings.widget_toggle"), isOn: $store.widgetVisible)
 
-            Picker(L("common.position"), selection: $store.cornerRaw) {
-                ForEach(Corner.allCases, id: \.rawValue) { corner in
-                    Text(L(corner.localizationKey)).tag(corner.rawValue)
+            // 挂件隐藏后，下面三项（大小 / 位置 / 穿透）都没有可作用的对象 —— 置灰而不是整段移除：
+            // 控件不跳动、文字不重排，用户也能看出「这几项属于挂件」。
+            Group {
+                Picker(L("common.size"), selection: $store.sizeRaw) {
+                    ForEach(SizePreset.allCases, id: \.rawValue) { preset in
+                        Text(L(preset.localizationKey)).tag(preset.rawValue)
+                    }
                 }
-            }
-            if store.hasCustom {
-                Text(L("settings.custom_position_hint"))
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
 
-            Toggle(L("settings.passthrough_toggle"), isOn: $store.passthrough)
+                Picker(L("common.position"), selection: $store.cornerRaw) {
+                    ForEach(Corner.allCases, id: \.rawValue) { corner in
+                        Text(L(corner.localizationKey)).tag(corner.rawValue)
+                    }
+                }
+                if store.hasCustom {
+                    Text(L("settings.custom_position_hint"))
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Toggle(L("settings.passthrough_toggle"), isOn: $store.passthrough)
+            }
+            .disabled(!store.widgetVisible)
+
+            Text(L("settings.widget_hint"))
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
@@ -107,6 +119,7 @@ struct SettingsView: View {
         .onChange(of: store.language) { _ in store.commit() }
         .onChange(of: store.sizeRaw) { _ in store.commit() }
         .onChange(of: store.cornerRaw) { _ in store.commit() }
+        .onChange(of: store.widgetVisible) { _ in store.commit() }
         .onChange(of: store.passthrough) { _ in store.commit() }
         .onChange(of: store.tdpWatts) { _ in store.commit() }
         .onChange(of: store.chargeLimitEnabled) { _ in store.commit() }

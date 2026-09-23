@@ -37,6 +37,8 @@ final class FloatingPanelController: NSWindowController {
     /// `Optional` 的 `==` 比较（元组不满足 `Equatable` 约束）。
     private var renderedChargeLimitEnabled: Bool?
     private var renderedChargeLimitPercent: Int?
+    /// 最近一次渲染到菜单栏的挂件可见性（与上两个同因：只在变化时重建菜单）。
+    private var renderedWidgetVisible: Bool?
 
     /// 挂件在 scale=1 时的基础宽高（与 PowerHUDView 保持一致）。
     /// 可见底盘为 58×58，四周各留 6pt 透明余量供充电外发光扩散，避免被窗口边界裁切。
@@ -65,8 +67,10 @@ final class FloatingPanelController: NSWindowController {
 
         // 菜单栏：构建与勾选态在 MenuBarController，动作经 MenuBarDelegate 回到这里。
         menuController = MenuBarController(settings: settings, delegate: self)
+        // 首帧是否显示挂件由 applySettings() 统一决定（它已含可见性分支）。
+        // ⚠️ 这里**不要**再无条件 `panel.makeKeyAndOrderFront(nil)`：那会让
+        // 「隐藏挂件」的设置在启动时先闪一下再消失，等于每次开机都泄露一次浮窗。
         applySettings()
-        panel.makeKeyAndOrderFront(nil)
         observeWindowMove(panel)
 
         // 启动时静默检查一次更新：仅在发现并下载到新版本时才提示，不打扰日常使用。
@@ -121,17 +125,21 @@ final class FloatingPanelController: NSWindowController {
             menuController.rebuild()
             renderedChargeLimitEnabled = nil   // 菜单已整体重建，缓存失效
             renderedChargeLimitPercent = nil
+            renderedWidgetVisible = nil
             settingsWindowController?.refreshLocalizedText()
             chartController?.refreshLocalizedText()
             healthPanelController?.refreshLocalizedText()
             renderedScale = nil
         }
 
-        // 充电上限改了 → 菜单标题里的百分比要跟着变（该项的标题与勾选态都是设定值的投影）。
+        // 菜单上有勾选项的设置改了 → 重建菜单。三处合并成一次判断：
+        // 语言切换时三个缓存同时被置 nil，合并后只重建一次菜单（分开写要重建三次）。
         if renderedChargeLimitEnabled != settings.chargeLimitEnabled
-            || renderedChargeLimitPercent != settings.chargeLimitPercent {
+            || renderedChargeLimitPercent != settings.chargeLimitPercent
+            || renderedWidgetVisible != settings.widgetVisible {
             renderedChargeLimitEnabled = settings.chargeLimitEnabled
             renderedChargeLimitPercent = settings.chargeLimitPercent
+            renderedWidgetVisible = settings.widgetVisible
             menuController.rebuild()
         }
 
@@ -165,6 +173,19 @@ final class FloatingPanelController: NSWindowController {
         // 记录本次程序化原点，供 didMove 观察者据此忽略程序化移动。
         lastProgrammaticOrigin = newOrigin
         panel.setFrame(NSRect(origin: newOrigin, size: newSize), display: true)
+
+        // 可见性放在最后：上面的尺寸/位置计算**不因隐藏而跳过**，这样隐藏期间屏幕分辨率、
+        // 尺寸档位变化都能照常跟上，重新显示时不会先闪一下旧位置。
+        //
+        // 用 `orderOut` 而不是 `close`：面板 `isReleasedWhenClosed = false`，close 会连同
+        // 视图树与窗口层级状态（`.canJoinAllSpaces` / `.fullScreenAuxiliary`）一起丢掉，
+        // 重新显示得重建整棵 HUD。orderOut 只是不可见，隐藏/恢复都无损。
+        // `isVisible` 判断是为了不与用户的手动行为打架（如已显示时不重复抢 key window）。
+        if settings.widgetVisible {
+            if !panel.isVisible { panel.makeKeyAndOrderFront(nil) }
+        } else if panel.isVisible {
+            panel.orderOut(nil)
+        }
     }
 
     /// 计算面板应在的窗口原点（无副作用，不触碰窗口）。无可用屏幕时返回 nil。
@@ -270,6 +291,13 @@ extension FloatingPanelController: MenuBarDelegate {
         settings.passthrough.toggle()
         settings.commit()
         menuController.rebuild()
+    }
+
+    func menuToggleWidget() {
+        settings.widgetVisible.toggle()
+        // 与 menuToggleChargeLimit 同一条路径：commit() → onChange → applySettings()
+        // 负责真正的显示/隐藏与菜单勾选态刷新，这里不再显式 rebuild()（避免同轮重建两次菜单）。
+        settings.commit()
     }
 
     func menuToggleChargeLimit() {

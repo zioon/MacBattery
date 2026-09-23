@@ -26,6 +26,7 @@
 "menu.settings" = "Settings…";
 "menu.history_chart" = "History chart…";
 "menu.battery_health" = "Battery health…";
+"menu.widget" = "Show widget";
 "menu.passthrough" = "Click-through";
 "menu.charge_limit" = "Charge limit (%d%%)";
 "menu.check_updates" = "Check for updates…";
@@ -38,6 +39,8 @@
 
 /* Settings window */
 "settings.language" = "Language";
+"settings.widget_toggle" = "Show widget";
+"settings.widget_hint" = "When hidden, reopen it from the menu bar icon or from this setting. Sampling, logging and the charge limit keep running in the background.";
 "settings.custom_position_hint" = "Using a custom position (drag the widget or pick a corner to change)";
 "settings.passthrough_toggle" = "Click-through (cannot be dragged while on)";
 "settings.tdp.title" = "System power cap (TDP)";
