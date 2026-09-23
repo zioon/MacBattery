@@ -12,10 +12,13 @@ final class SettingsWindowController: NSWindowController {
     /// 创建设置窗口（首次调用后复用）。
     static func makeIfNeeded(existing: SettingsWindowController?,
                              store: SettingsStore,
-                             updater: UpdateChecker) -> SettingsWindowController {
+                             updater: UpdateChecker,
+                             limiter: ChargeLimiter) -> SettingsWindowController {
         if let existing { return existing }
 
-        let hosting = NSHostingView(rootView: SettingsView(store: store, updater: updater))
+        let hosting = NSHostingView(rootView: SettingsView(store: store,
+                                                          updater: updater,
+                                                          limiter: limiter))
         hosting.layout()
         let height = max(420, hosting.fittingSize.height)
         let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 340, height: height),

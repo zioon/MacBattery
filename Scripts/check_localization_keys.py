@@ -47,8 +47,15 @@ def strip_comments(text):
 
 
 def specifiers(value):
-    # 忽略 %% 这个转义后的字面百分号。
-    return sorted(m.group(0) for m in SPECIFIER.finditer(value))
+    # 先剥掉转义后的字面百分号 `%%` 再扫描。
+    #
+    # 不剥的话会**误报**：`%%` 后面跟「空格 + 字母」时，正则会把第二个 `%` 当成占位符的开头
+    # （`[-+ #0]*` 吃掉那个空格，`[a-zA-Z@]` 匹配到字母），于是一句
+    #   "Reached the %d%% limit"   被解析成 ['%d', '% l']
+    # 而对应的中文 "已到上限 %d%%，充电已暂停"（`%%` 后是中文）解析成 ['%d']，
+    # 两边被判定为"占位符漂移" —— 真实产物是逼着译文为了绕过脚本而改措辞。
+    # `%%` 按定义就是字面百分号、永远不是参数，剥掉只会减少误报，不会漏掉真问题。
+    return sorted(m.group(0) for m in SPECIFIER.finditer(value.replace("%%", "")))
 
 
 def swift_files():

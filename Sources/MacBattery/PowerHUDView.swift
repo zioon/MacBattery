@@ -9,6 +9,8 @@ import MacBatteryCore
 struct PowerHUDView: View {
 
     @ObservedObject var monitor: PowerMonitor
+    /// 充电上限状态：用来在环上画「上限刻度」，以及到上限后换成「限充中」的提示。
+    @ObservedObject var limiter: ChargeLimiter
     /// 缩放系数（0.8 / 1.0 / 1.3…）
     var scale: CGFloat = 1.0
     /// 语言变化时驱动重绘。挂件视图树在语言切换时也会被 FloatingPanelController 重建，
@@ -16,9 +18,10 @@ struct PowerHUDView: View {
     @ObservedObject private var localization: LocalizationManager
 
     /// 显式初始化：`localization` 是私有存储属性，memberwise 初始化器会退化为 private，
-    /// 故显式提供与原先等价的构造签名（调用点写作 `PowerHUDView(monitor:scale:)` 不变）。
-    init(monitor: PowerMonitor, scale: CGFloat = 1.0) {
+    /// 故显式提供与原签名等价的构造（调用点写作 `PowerHUDView(monitor:limiter:scale:)`）。
+    init(monitor: PowerMonitor, limiter: ChargeLimiter, scale: CGFloat = 1.0) {
         self.monitor = monitor
+        self.limiter = limiter
         self.scale = scale
         self.localization = LocalizationManager.shared
     }
@@ -58,6 +61,22 @@ struct PowerHUDView: View {
     /// 随电量平滑变化的环色（红 → 橙 → 黄绿 → 绿 → 青绿）。
     private var levelColor: Color { Self.levelColor(for: progress) }
 
+    /// 上限刻度在环上的 trim 区间（nil = 不画）。
+    /// 只在「功能启用且上限 < 100%」时画：100% 等价于不限制，画一条 100% 处的刻度是误导。
+    private var limitTick: (from: Double, to: Double)? {
+        guard limiter.isEnabled,
+              limiter.limitPercent < ChargeLimitPolicy.maximumPercent else { return nil }
+        let position = Double(limiter.limitPercent) / 100.0
+        // 0.012 ≈ 环长的 1.2%：够醒目，又不会被误读成一段电量弧。
+        return (max(0, position - 0.012), position)
+    }
+
+    /// 是否处于「已到上限、充电已暂停」。
+    private var isHolding: Bool {
+        if case .holding = limiter.phase { return true }
+        return false
+    }
+
     var body: some View {
         ZStack {
             // 半透明暗色底盘
@@ -80,6 +99,16 @@ struct PowerHUDView: View {
                     )
                     .shadow(color: isCharging ? levelColor.opacity(0.9) : Color.clear,
                             radius: 1.5 * scale)
+
+                // 上限刻度：功能启用时在充电环上标出「充到这条线就停」。
+                // 画在进度弧之后 —— 到达上限时进度弧的末端正好落在刻度上，一眼可读出
+                // 「已经顶到上限了」，比任何数字提示都直观。
+                if let tick = limitTick {
+                    RoundedRectangle(cornerRadius: ringStrokeRadius)
+                        .trim(from: tick.from, to: tick.to)
+                        .stroke(Color.white.opacity(0.92),
+                                style: StrokeStyle(lineWidth: ringWidth, lineCap: .butt))
+                }
             }
             .padding(ringWidth / 2)
 
@@ -116,9 +145,9 @@ struct PowerHUDView: View {
                 }
 
                 HStack(alignment: .center, spacing: 2 * scale) {
-                    Image(systemName: isCharging ? "bolt.fill" : "bolt.badge.clock")
+                    Image(systemName: chargeIconName)
                         .font(.system(size: 6.5 * scale, weight: .bold))
-                        .foregroundColor(isCharging ? .yellow : .white.opacity(0.5))
+                        .foregroundColor(chargeIconColor)
                         // 充电时图标静态高亮，不做任何脉动 / 晃动
                         .shadow(color: isCharging ? Color.yellow.opacity(0.7) : Color.clear,
                                 radius: 1.0 * scale)
@@ -146,6 +175,7 @@ struct PowerHUDView: View {
         // 电量变化时颜色平滑过渡；插拔电源时辉光淡入淡出（均为颜色过渡，无几何运动）
         .animation(.easeInOut(duration: 0.8), value: monitor.batteryPercent)
         .animation(.easeInOut(duration: 0.3), value: isCharging)
+        .animation(.easeInOut(duration: 0.3), value: isHolding)
     }
 
     // MARK: - 电量配色
@@ -192,19 +222,39 @@ struct PowerHUDView: View {
                 ? LocalizedFormat.number(monitor.chargingWatts, decimals: 1)
                 : L("hud.zero")
         }
+        // 已到上限、充电被暂停：这一行换成状态词，而不是显示 "0"（"0 W" 会被读成"没在充"，
+        // 但用户真正关心的是"我设的上限生效了没有"）。
+        if isHolding { return L("hud.charge_hold") }
         // 使用电池（放电）：该行改为「已用时长」。
+        // 只显示 `H:MM` 本身，不加任何前缀文字（靠行首的时钟图标与「剩余」行区分）。
         if monitor.onBattery {
-            return L("hud.used_prefix", Self.batteryDuration(monitor.batteryUseElapsed ?? 0))
+            return Self.batteryDuration(monitor.batteryUseElapsed ?? 0)
         }
         // 接通电源但已充满（非充电）：维持原占位。
         return L("hud.zero")
     }
 
-    /// 该行数值是否为功率（需要 W 单位）。使用电池时该行是时长，不带 W。
-    private var showsWattsUnit: Bool { isCharging || !monitor.onBattery }
+    /// 该行数值是否为功率（需要 W 单位）。使用电池时该行是时长、限充时该行是状态词，都不带 W。
+    private var showsWattsUnit: Bool { !isHolding && (isCharging || !monitor.onBattery) }
+
+    /// 行首图标：充电中 `bolt.fill`、已限充 `bolt.slash`（"电还在，但不往里充"）、
+    /// 其余维持原来的 `bolt.badge.clock`。
+    private var chargeIconName: String {
+        if isCharging { return "bolt.fill" }
+        if isHolding { return "bolt.slash" }
+        return "bolt.badge.clock"
+    }
+
+    private var chargeIconColor: Color {
+        if isCharging { return .yellow }
+        // 限充用与设置面板状态提示一致的绿：表示"已经按你说的停住了"，不是异常。
+        if isHolding { return Color(red: 0.16, green: 0.80, blue: 0.45) }
+        return .white.opacity(0.5)
+    }
 
     /// 充电电压·电流，写在充电功率下方。
     /// - 正在充电：如实显示 V·A（涓流暂停时电流为 0 仍如实显示）。
+    /// - 已限充：显示上限值，与环上的刻度线互相印证（刻度是位置、这行是数字）。
     /// - 使用电池（放电）：该行改为「预计剩余时间」（与系统菜单栏同源的 IOPS 估算；
     ///   系统尚未给出估计时显示「估算中…」）。
     /// - 接通电源但已充满（非充电）：维持原占位，避免放电电流读数被误认为充电。
@@ -213,6 +263,9 @@ struct PowerHUDView: View {
             return L("hud.voltage_amps",
                      LocalizedFormat.number(monitor.chargingVoltage, decimals: 1),
                      LocalizedFormat.number(monitor.chargingCurrent, decimals: 1))
+        }
+        if isHolding {
+            return L("hud.limit_note", limiter.limitPercent)
         }
         if monitor.onBattery {
             return L("hud.remaining_prefix", Self.batteryDuration(monitor.batteryTimeRemaining))

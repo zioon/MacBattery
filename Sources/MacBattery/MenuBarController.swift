@@ -10,6 +10,7 @@ protocol MenuBarDelegate: AnyObject {
     func menuChooseCorner(_ rawValue: Int)
     func menuChooseSize(_ rawValue: Int)
     func menuTogglePassthrough()
+    func menuToggleChargeLimit()
     func menuCheckForUpdates()
 }
 
@@ -88,6 +89,14 @@ final class MenuBarController: NSObject {
         passthroughItem.state = settings.passthrough ? .on : .off
         menu.addItem(passthroughItem)
 
+        // 充电上限开关：标题里带上当前上限，"能不能从这里一键关掉"是插电办公时最常用的动作。
+        let chargeLimitItem = NSMenuItem(title: L("menu.charge_limit", settings.chargeLimitPercent),
+                                         action: #selector(toggleChargeLimit(_:)),
+                                         keyEquivalent: "")
+        chargeLimitItem.target = self
+        chargeLimitItem.state = settings.chargeLimitEnabled ? .on : .off
+        menu.addItem(chargeLimitItem)
+
         menu.addItem(.separator())
         let updateItem = NSMenuItem(title: L("menu.check_updates"), action: #selector(checkForUpdates), keyEquivalent: "")
         updateItem.target = self
@@ -107,6 +116,7 @@ final class MenuBarController: NSObject {
     @objc private func chooseCorner(_ sender: NSMenuItem) { delegate?.menuChooseCorner(sender.tag) }
     @objc private func chooseSize(_ sender: NSMenuItem) { delegate?.menuChooseSize(sender.tag) }
     @objc private func togglePassthrough(_ sender: NSMenuItem) { delegate?.menuTogglePassthrough() }
+    @objc private func toggleChargeLimit(_ sender: NSMenuItem) { delegate?.menuToggleChargeLimit() }
     @objc private func checkForUpdates() { delegate?.menuCheckForUpdates() }
     @objc private func quit() { NSApp.terminate(nil) }
 }

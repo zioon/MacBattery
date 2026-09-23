@@ -27,6 +27,7 @@
 "menu.history_chart" = "History chart…";
 "menu.battery_health" = "Battery health…";
 "menu.passthrough" = "Click-through";
+"menu.charge_limit" = "Charge limit (%d%%)";
 "menu.check_updates" = "Check for updates…";
 "menu.quit" = "Quit MacBattery";
 
@@ -48,6 +49,23 @@
 "settings.check_update" = "Check for updates";
 "settings.update.auto_hint" = "Checks automatically at launch and downloads a new DMG into your Downloads folder.";
 "settings.done" = "Done";
+
+/* Charge limit */
+"settings.charge_limit.toggle" = "Charge limit (pause charging at the limit)";
+"settings.charge_limit.title" = "Charge limit";
+"settings.charge_limit.value" = "%d%%";
+"settings.charge_limit.value.unlimited" = "100% (no limit)";
+"settings.charge_limit.hint.helper" = "Stopping the charge for real requires the root helper (sudo ./install_helper.sh); without it the app only reports status and never touches charging.";
+"settings.charge_limit.hint.system" = "If macOS “Optimized Battery Charging / Battery Health Management” is also on, the two can interfere — enable only one of them.";
+"settings.charge_limit.status.off" = "Off: charging is not controlled";
+"settings.charge_limit.status.unlimited" = "Limit set to 100%: charging is unrestricted";
+"settings.charge_limit.status.charging" = "Charging; it will pause at %d%%";
+"settings.charge_limit.status.holding" = "Reached the %d%% limit, charging paused";
+"settings.charge_limit.status.on_battery" = "On battery: the limit is inactive";
+"settings.charge_limit.status.not_installed" = "No root helper detected: charging will not be stopped (see README)";
+"settings.charge_limit.status.not_running" = "The root helper is not running: charging will not be stopped";
+"settings.charge_limit.status.outdated_helper" = "The root helper is outdated: run install_helper.sh again";
+"settings.charge_limit.status.unsupported" = "This Mac does not expose the SMC charge-inhibit keys; charging cannot be stopped";
 
 /* History chart */
 "chart.history.axis_hint" = "Left: %  ·  Right: W / V / A";
@@ -90,11 +108,12 @@
 
 /* Widget HUD */
 "hud.unit.watts" = "W";
-"hud.used_prefix" = "Used %@";
 "hud.remaining_prefix" = "Left %@";
 "hud.estimating" = "Estimating…";
 "hud.voltage_amps" = "%@V · %@A";
 "hud.voltage_amps.placeholder" = "--V · --A";
+"hud.charge_hold" = "Limited";
+"hud.limit_note" = "limit %d%%";
 "common.placeholder" = "--";
 "hud.zero" = "0";
 

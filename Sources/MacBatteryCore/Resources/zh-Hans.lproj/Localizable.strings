@@ -29,6 +29,7 @@
 "menu.history_chart" = "历史图表…";
 "menu.battery_health" = "电池健康…";
 "menu.passthrough" = "鼠标穿透";
+"menu.charge_limit" = "充电上限（%d%%）";
 "menu.check_updates" = "检查更新…";
 "menu.quit" = "退出 MacBattery";
 
@@ -50,6 +51,23 @@
 "settings.check_update" = "检查更新";
 "settings.update.auto_hint" = "启动时会自动检查，发现新版本将自动下载 DMG 到「下载」文件夹。";
 "settings.done" = "完成";
+
+/* 充电上限 */
+"settings.charge_limit.toggle" = "充电上限（到达即暂停充电）";
+"settings.charge_limit.title" = "充电上限";
+"settings.charge_limit.value" = "%d%%";
+"settings.charge_limit.value.unlimited" = "100%（不限制）";
+"settings.charge_limit.hint.helper" = "需要安装 root helper 才能真正断开充电（sudo ./install_helper.sh）；未安装时只显示状态，不会干预充电。";
+"settings.charge_limit.hint.system" = "若同时开启系统的「优化电池充电 / 电池健康管理」，两者可能互相干扰，建议二选一。";
+"settings.charge_limit.status.off" = "已关闭：不干预充电";
+"settings.charge_limit.status.unlimited" = "上限 100%：不限制充电";
+"settings.charge_limit.status.charging" = "充电中，达到 %d%% 后暂停";
+"settings.charge_limit.status.holding" = "已到上限 %d%%，充电已暂停";
+"settings.charge_limit.status.on_battery" = "未接电源：上限暂不生效";
+"settings.charge_limit.status.not_installed" = "未检测到 root helper：不会断开充电（见 README）";
+"settings.charge_limit.status.not_running" = "root helper 未在运行：不会断开充电";
+"settings.charge_limit.status.outdated_helper" = "root helper 版本过旧：请重新运行 install_helper.sh";
+"settings.charge_limit.status.unsupported" = "本机不支持充电抑制（SMC 无可用键），无法断开充电";
 
 /* 历史图表 */
 "chart.history.axis_hint" = "左轴：%  ·  右轴：W / V / A";
@@ -90,11 +108,12 @@
 
 /* 挂件 HUD */
 "hud.unit.watts" = "W";
-"hud.used_prefix" = "已用 %@";
 "hud.remaining_prefix" = "剩余 %@";
 "hud.estimating" = "估算中…";
 "hud.voltage_amps" = "%@V · %@A";
 "hud.voltage_amps.placeholder" = "--V · --A";
+"hud.charge_hold" = "限充中";
+"hud.limit_note" = "上限 %d%%";
 "common.placeholder" = "--";
 "hud.zero" = "0";
 

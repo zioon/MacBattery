@@ -16,6 +16,10 @@ final class SettingsStore: ObservableObject {
     @Published var customY: Double
     /// 界面语言（`.system` = 跟随系统）。
     @Published var language: AppLanguage
+    /// 充电上限总开关。**默认关闭**：本功能会真的去写 SMC 断充电，必须由用户显式开启。
+    @Published var chargeLimitEnabled: Bool
+    /// 充电上限（%）。100 视为「不限制」，与关闭等价（见 `ChargeLimitPolicy`）。
+    @Published var chargeLimitPercent: Int
 
     /// 设置变更后的回调（由 FloatingPanelController 注入，用于应用界面）。
     var onChange: (@MainActor () -> Void)?
@@ -33,6 +37,14 @@ final class SettingsStore: ObservableObject {
         customY = d.double(forKey: Self.key("cy"))
         // 首启（或旧版本升级）时无该键 → 跟随系统，由引擎按系统首选语言匹配。
         language = AppLanguage(rawValue: d.string(forKey: Self.key("language")) ?? "") ?? .system
+
+        // 充电上限：无该键（首启 / 从旧版本升级）→ 关闭 + 默认 80%。
+        // 用 object(forKey:) 而不是 integer(forKey:) 区分「键不存在」与「值就是 0」：
+        // integer 对缺失键返回 0，会被 clamp 成 50，等于给老用户凭空设了个 50% 的上限。
+        chargeLimitEnabled = (d.object(forKey: Self.key("chargeLimitEnabled")) as? Bool) ?? false
+        chargeLimitPercent = ChargeLimitPolicy.clamp(
+            (d.object(forKey: Self.key("chargeLimitPercent")) as? Int)
+                ?? ChargeLimitPolicy.defaultPercent)
 
         if sizeRaw < 0 || sizeRaw >= SizePreset.allCases.count { sizeRaw = SizePreset.medium.rawValue }
         if cornerRaw < 0 || cornerRaw >= Corner.allCases.count { cornerRaw = Corner.topRight.rawValue }
@@ -53,6 +65,8 @@ final class SettingsStore: ObservableObject {
         d.set(customX, forKey: Self.key("cx"))
         d.set(customY, forKey: Self.key("cy"))
         d.set(language.storageValue, forKey: Self.key("language"))
+        d.set(chargeLimitEnabled, forKey: Self.key("chargeLimitEnabled"))
+        d.set(chargeLimitPercent, forKey: Self.key("chargeLimitPercent"))
         // 语言切换即时生效：更新引擎（幂等，语言未变时不重读资源）。
         LocalizationManager.shared.apply(language)
         onChange?()

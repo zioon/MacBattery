@@ -124,3 +124,88 @@ double SMCGetFloatValue(io_connect_t conn, const char *key) {
 
   return 0.0;
 }
+
+// ── 充电抑制：键与取值的唯一定义处 ────────────────────────────────────────────
+
+// 充电抑制候选键。CH0B 是主控键；CH0C 在多数机型上需要一并写入才会真正断开充电，
+// 因此这里**逐个尝试全部**（而不是命中即止）。两键的语义与取值相同：
+//   0x00 = 允许充电，0x02 = 抑制充电。
+static const char *const kSMCChargeKeys[] = {
+    "CH0B",
+    "CH0C",
+};
+
+#define SMC_CHARGE_ALLOW_VALUE 0x00
+#define SMC_CHARGE_INHIBIT_VALUE 0x02
+
+int SMCChargeKeyCount(void) {
+  return (int)(sizeof(kSMCChargeKeys) / sizeof(kSMCChargeKeys[0]));
+}
+
+const char *SMCChargeKey(int index) {
+  if (index < 0 || index >= SMCChargeKeyCount()) {
+    return NULL;
+  }
+  return kSMCChargeKeys[index];
+}
+
+unsigned char SMCChargeAllowValue(void) { return SMC_CHARGE_ALLOW_VALUE; }
+unsigned char SMCChargeInhibitValue(void) { return SMC_CHARGE_INHIBIT_VALUE; }
+
+// ── 单字节读写 ──────────────────────────────────────────────────────────────
+
+// 把 4 字符键名打包成 SMC 协议里的 32 位整数。
+// 逐字节显式转 unsigned char：键名是 ASCII，但 char 在本平台是有符号的，
+// 直接左移在遇到非 ASCII 字节时会产生符号扩展（现有 SMCReadKey 用的就是直接左移，
+// 这里不再沿用，避免把这类边界带进新代码）。
+static unsigned int SMCKeyToUInt32(const char *key) {
+  return ((unsigned int)(unsigned char)key[0] << 24) |
+         ((unsigned int)(unsigned char)key[1] << 16) |
+         ((unsigned int)(unsigned char)key[2] << 8) |
+         ((unsigned int)(unsigned char)key[3]);
+}
+
+int SMCReadByte(io_connect_t conn, const char *key, unsigned char *outValue) {
+  SMCKeyData_t val;
+  if (SMCReadKey(conn, key, &val) != kIOReturnSuccess) {
+    return 0;  // 键不存在（机型不支持）
+  }
+  if (val.keyInfo.dataSize < 1) {
+    return 0;  // 键存在但没有数据，按不可用处理
+  }
+  *outValue = (unsigned char)val.bytes[0];
+  return 1;
+}
+
+int SMCWriteByte(io_connect_t conn, const char *key, unsigned char value) {
+  SMCKeyData_t inputStructure;
+  SMCKeyData_t outputStructure;
+
+  memset(&inputStructure, 0, sizeof(SMCKeyData_t));
+  memset(&outputStructure, 0, sizeof(SMCKeyData_t));
+
+  // ① 先取 keyInfo：写数据前必须先知道该键的 dataSize，协议帧里要回填。
+  inputStructure.key = SMCKeyToUInt32(key);
+  inputStructure.data8 = SMC_CMD_READ_KEYINFO;
+
+  kern_return_t result =
+      SMCCall(conn, KERNEL_INDEX_SMC, &inputStructure, &outputStructure);
+  if (result != kIOReturnSuccess) {
+    return 0;
+  }
+
+  // ② 只往「单字节」键写。
+  // 这是本函数唯一的硬性守卫：如果该键的 dataSize 不是 1，说明它不是我们认知里的
+  // 开关量（可能是个多字节的结构体），按 1 字节硬写会把它其余字节留成未定义值 ——
+  // 那是在写一块我们并不理解、且直接影响电源管理的寄存器。宁可判为不支持。
+  if (outputStructure.keyInfo.dataSize != 1) {
+    return 0;
+  }
+
+  inputStructure.keyInfo.dataSize = outputStructure.keyInfo.dataSize;
+  inputStructure.data8 = SMC_CMD_WRITE_BYTES;
+  inputStructure.bytes[0] = (char)value;
+
+  result = SMCCall(conn, KERNEL_INDEX_SMC, &inputStructure, &outputStructure);
+  return result == kIOReturnSuccess ? 1 : 0;
+}

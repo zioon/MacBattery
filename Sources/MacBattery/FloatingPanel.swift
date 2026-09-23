@@ -31,6 +31,13 @@ final class FloatingPanelController: NSWindowController {
     /// 当前渲染界面所用的语言。切换语言时菜单、窗口标题与挂件视图树都要刷新。
     private var renderedLanguage: AppLanguage?
 
+    /// 最近一次渲染到菜单栏的充电上限配置。
+    /// 只在变化时重建菜单：TDP 滑块每次 `commit()` 都重建一次 NSMenu 纯属浪费
+    ///（与 `renderedScale` 同一思路）。用两个可选值而不是元组 —— 元组无法参与
+    /// `Optional` 的 `==` 比较（元组不满足 `Equatable` 约束）。
+    private var renderedChargeLimitEnabled: Bool?
+    private var renderedChargeLimitPercent: Int?
+
     /// 挂件在 scale=1 时的基础宽高（与 PowerHUDView 保持一致）。
     /// 可见底盘为 58×58，四周各留 6pt 透明余量供充电外发光扩散，避免被窗口边界裁切。
     private let baseWidth: CGFloat = 70
@@ -112,10 +119,20 @@ final class FloatingPanelController: NSWindowController {
         if renderedLanguage != LocalizationManager.shared.language {
             renderedLanguage = LocalizationManager.shared.language
             menuController.rebuild()
+            renderedChargeLimitEnabled = nil   // 菜单已整体重建，缓存失效
+            renderedChargeLimitPercent = nil
             settingsWindowController?.refreshLocalizedText()
             chartController?.refreshLocalizedText()
             healthPanelController?.refreshLocalizedText()
             renderedScale = nil
+        }
+
+        // 充电上限改了 → 菜单标题里的百分比要跟着变（该项的标题与勾选态都是设定值的投影）。
+        if renderedChargeLimitEnabled != settings.chargeLimitEnabled
+            || renderedChargeLimitPercent != settings.chargeLimitPercent {
+            renderedChargeLimitEnabled = settings.chargeLimitEnabled
+            renderedChargeLimitPercent = settings.chargeLimitPercent
+            menuController.rebuild()
         }
 
         let preset = SizePreset(rawValue: settings.sizeRaw) ?? .medium
@@ -129,7 +146,9 @@ final class FloatingPanelController: NSWindowController {
         // monitor，运行期数值更新由它驱动，与这里无关。
         if renderedScale != scale {
             renderedScale = scale
-            let hosting = NSHostingView(rootView: PowerHUDView(monitor: monitor, scale: scale))
+            let hosting = NSHostingView(rootView: PowerHUDView(monitor: monitor,
+                                                              limiter: monitor.chargeLimiter,
+                                                              scale: scale))
             hosting.frame = NSRect(x: 0, y: 0, width: width, height: height)
             hosting.autoresizingMask = []
             panel.contentView = hosting
@@ -208,7 +227,8 @@ extension FloatingPanelController: MenuBarDelegate {
     func menuOpenSettings() {
         settingsWindowController = SettingsWindowController.makeIfNeeded(existing: settingsWindowController,
                                                                          store: settings,
-                                                                         updater: updater)
+                                                                         updater: updater,
+                                                                         limiter: monitor.chargeLimiter)
         settingsWindowController?.showAndActivate()
     }
 
@@ -250,6 +270,13 @@ extension FloatingPanelController: MenuBarDelegate {
         settings.passthrough.toggle()
         settings.commit()
         menuController.rebuild()
+    }
+
+    func menuToggleChargeLimit() {
+        settings.chargeLimitEnabled.toggle()
+        // commit() 会经 onChange → applySettings() 刷新菜单标题与勾选态；
+        // 这里不再显式 rebuild()，避免同一轮重建两次菜单。
+        settings.commit()
     }
 
     func menuCheckForUpdates() {

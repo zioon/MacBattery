@@ -28,9 +28,13 @@ let package = Package(
             name: "SMCBridge",
             path: "Sources/SMCBridge"
         ),
+        // root helper 守护：既读 SMC 整机功率，也是充电上限的**唯一执行者**（写充电抑制键）。
+        // 依赖 MacBatteryCore 是为了共用 App ↔ helper 的指令/回执协议定义
+        //（ChargeLimitWire）—— 协议字段一旦两边各写一份，就会出现"编译能过、运行时静默失效"
+        // 的错位缺陷，而症状只是"开关点了没反应"，极难排查。
         .executableTarget(
             name: "MacBatteryHelper",
-            dependencies: ["SMCBridge"],
+            dependencies: ["SMCBridge", "MacBatteryCore"],
             path: "Sources/MacBatteryHelper"
         ),
         .executableTarget(

@@ -97,6 +97,16 @@ final class PowerMonitor: ObservableObject {
     private let settings: SettingsStore
     /// 采样日志：每次采样完成后追加一条，供历史图表使用。
     private let logger: PowerLogger
+    /// 充电上限：**由本对象在每个采样点驱动**（见 `apply(_:)`）。
+    ///
+    /// 放在这里而不是让它自己起定时器的原因：决策需要「电量 + 是否在充电 + 是否接了外电」，
+    /// 这些正好是每一拍采样的产物；再开一条定时器既多一份时钟，又必然与采样结果错位。
+    /// 对外暴露（非 private）是为了让挂件/设置面板/菜单栏共用同一个实例、同一个状态源。
+    ///
+    /// ⚠️ 在 `init` 里显式构造而不是用属性默认值：`ChargeLimiter` 是 `@MainActor` 类型，
+    /// 而属性默认值表达式所在上下文的隔离性在不同 Swift 版本间有过变化 —— 显式写在
+    /// `init`（已隔离到主线程）里最保险，也省得为了"编译能不能过"再占一次 CI。
+    let chargeLimiter: ChargeLimiter
     /// 后台串行采样队列：让采样脱离主 RunLoop 执行。
     /// 注意：主线程也存在硬件读取入口（首拍 / 电源事件补采样 / 健康日志），
     /// Battery / SMC / SystemPower 的静态缓存由各自内部的锁保护，而非依赖本队列串行。
@@ -114,6 +124,7 @@ final class PowerMonitor: ObservableObject {
     init(settings: SettingsStore, logger: PowerLogger) {
         self.settings = settings
         self.logger = logger
+        self.chargeLimiter = ChargeLimiter()
     }
 
     func start() {
@@ -194,6 +205,13 @@ final class PowerMonitor: ObservableObject {
             dischargeStart = nil
             batteryUseElapsed = nil
         }
+        // 充电上限：直接用本拍的电量/充电/外电状态驱动决策，不另起定时器 —
+        // 否则两者时钟不同步，会在"刚插上电"这类瞬间用错状态做判断。
+        chargeLimiter.evaluate(level: frame.batteryPercent,
+                               isCharging: frame.isCharging,
+                               onBattery: frame.onBattery,
+                               enabled: settings.chargeLimitEnabled,
+                               limit: settings.chargeLimitPercent)
         // 记录一条样本到日志（供历史图表）。主线程追加，磁盘落盘由日志内部后台完成。
         logger.append(PowerSample(
             t: Date(),
