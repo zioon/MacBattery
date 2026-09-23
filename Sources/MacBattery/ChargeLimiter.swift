@@ -182,7 +182,10 @@ final class ChargeLimiter: ObservableObject {
         writeInFlight = true
         queue.async { [weak self] in
             let written = Self.writeCommand(command)
-            Task { @MainActor in
+            // 捕获列表必须显式写 `[weak self]`：外层已经是 weak 捕获，内层闭包直接引用
+            // 那个（可变的）捕获变量会被并发检查判为 "reference to captured var 'self' in
+            // concurrently-executing code" —— 在 CI 上是编译错误，不是警告。
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.writeInFlight = false
                 guard written else { return }
@@ -215,7 +218,8 @@ final class ChargeLimiter: ObservableObject {
         statusReadInFlight = true
         queue.async { [weak self] in
             let status = Self.readStatus()
-            Task { @MainActor in
+            // 同上：内层闭包显式 weak 捕获，别依赖外层那个 weak 捕获变量。
+            Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.statusReadInFlight = false
                 self.apply(status: status, now: Date())
