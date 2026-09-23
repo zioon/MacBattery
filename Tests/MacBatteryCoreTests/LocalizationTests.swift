@@ -246,13 +246,24 @@ final class LocalizationTests: XCTestCase {
     }
 
     /// 提取格式串里的类型说明符（排序后比较，忽略 `%%` 这个转义后的字面百分号）。
+    ///
+    /// ⚠️ 必须先剥掉 `%%` 再扫描，否则会**误报**：`%%` 后面跟「空格 + 字母」时，正则会把
+    /// 第二个 `%` 当成占位符的开头（`[-+ #0]*` 吃掉那个空格，`[a-zA-Z@]` 匹配到字母），
+    /// 于是英文 `"Reached the %d%% limit"` 被解析成 `["% l", "%d"]`，而对应的中文
+    /// `"已到上限 %d%%，充电已暂停"`（`%%` 后是中文标点）解析成 `["%d"]` —— 两边被判为
+    /// 「占位符漂移」。`%%` 按定义就是字面百分号、永远不是参数，剥掉只会减少误报。
+    ///
+    /// 本方法与 `Scripts/check_localization_keys.py` 的 `specifiers()` 是同一份检查的两个实现，
+    /// **改一处必须同步改另一处**（2026-09-23：脚本已修、本处漏修，直到 CI 跑 `swift test`
+    /// 才以 `testFormatSpecifiersMatchAcrossLanguages` 失败的形式暴露出来）。
     private func specifiers(in format: String) -> [String] {
         let pattern = "%(?:\\d+\\$)?[-+ #0]*\\d*(?:\\.\\d+)?[a-zA-Z@]"
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
-        let range = NSRange(format.startIndex..<format.endIndex, in: format)
-        return regex.matches(in: format, range: range).compactMap { match in
-            guard let matched = Range(match.range, in: format) else { return nil }
-            return String(format[matched])
+        let stripped = format.replacingOccurrences(of: "%%", with: "")
+        let range = NSRange(stripped.startIndex..<stripped.endIndex, in: stripped)
+        return regex.matches(in: stripped, range: range).compactMap { match in
+            guard let matched = Range(match.range, in: stripped) else { return nil }
+            return String(stripped[matched])
         }.sorted()
     }
 }
