@@ -2,7 +2,7 @@
 
 本文件记录 MacBattery 的重要变更，格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [Unreleased]
+## [1.2.2] - 2026-09-24
 
 ### 新增
 
@@ -35,9 +35,10 @@
 
 ### 变更
 
-- CI 守护脚本修正：`check_localization_keys.py` 的占位符扫描原先会把转义后的字面百分号 `%%`
-  误当成占位符（`"Reached the %d%% limit"` 被解析出 `% l`），使译文被误判为「占位符漂移」、
-  只能改措辞去绕开脚本。现在先剥掉 `%%` 再扫描。
+- 占位符检查修正（这份检查有两处实现，必须同步改）：`Scripts/check_localization_keys.py` 与
+  `Tests/MacBatteryCoreTests/LocalizationTests.swift` 的占位符扫描，原先都会把转义后的字面百分号
+  `%%` 误当成占位符（英文 `"Reached the %d%% limit"` 被解析出 `% l`），使译文被误判为「占位符漂移」、
+  只能改措辞去绕开检查。现在两处都先剥掉 `%%` 再扫描。
 - 挂件使用电池时的那行去掉「已用」前缀文字，只显示 `H:MM` 时长本身（如 `0:45`）：
   该行与下一行的「剩余 1:23」靠行首图标区分，不再用文字占宽。
   随之移除已无调用点的文案键 `hud.used_prefix`（`zh-Hans` / `en` 两份资源同步删除，避免留下死键）。
