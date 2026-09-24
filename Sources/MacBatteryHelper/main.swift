@@ -316,7 +316,11 @@ func applyInhibit(_ conn: io_connect_t, enforce: Bool) -> (applied: Bool, keys: 
 func applyMaxLevel(_ conn: io_connect_t,
                    enforce: Bool,
                    limit: Int) -> (applied: Bool, keys: [String], error: String?) {
-    let rawKey = SMCChargeMaxLevelKey()
+    // C 侧返回的是 `const char *`（导入为可选指针），赋给局部量后可选性会保留，
+    // 而 `String(cString:)` 要非可选指针 —— 必须显式解包。解不开就按"机制不可用"处理。
+    guard let rawKey = SMCChargeMaxLevelKey() else {
+        return (false, [], ChargeLimitWire.Status.ErrorCode.noChargeKey)
+    }
     let key = String(cString: rawKey)
     let target = enforce ? limit : ChargeLimitPolicy.maximumPercent
 
@@ -403,7 +407,10 @@ func probeChargeKeys(_ conn: io_connect_t, usedKeys: [String]) -> [ChargeLimitWi
     for i in 0..<SMCChargeKeyCount() {
         if let rawKey = SMCChargeKey(i) { probe(String(cString: rawKey)) }
     }
-    probe(String(cString: SMCChargeMaxLevelKey()))
+    // C 侧返回可选指针，`String(cString:)` 要非可选 → 显式解包（同 applyMaxLevel 的说明）。
+    if let maxLevelKey = SMCChargeMaxLevelKey() {
+        probe(String(cString: maxLevelKey))
+    }
     for i in 0..<SMCChargeProbeKeyCount() {
         if let rawKey = SMCChargeProbeKey(i) { probe(String(cString: rawKey)) }
     }

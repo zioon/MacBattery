@@ -119,7 +119,7 @@ public enum ChargeLimitPolicy {
     /// 这是 helper 侧的**最后一道护栏**：指令文件来自全局可写的 `/tmp`，
     /// 任何本地用户都能伪造。与 `clamp` 的区别是这个不做修正、只做裁决 ——
     /// 不合法的值宁可拒绝执行，也不要"顺手帮你改成合法值"。
-    public static func isWritable(limit: Int) -> Bool {
+    public static func isWritable(_ limit: Int) -> Bool {
         limit >= minimumPercent && limit <= maximumPercent
     }
 
