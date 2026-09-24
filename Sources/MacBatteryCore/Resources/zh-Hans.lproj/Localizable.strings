@@ -67,10 +67,19 @@
 "settings.charge_limit.status.charging" = "充电中，达到 %d%% 后暂停";
 "settings.charge_limit.status.holding" = "已到上限 %d%%，充电已暂停";
 "settings.charge_limit.status.on_battery" = "未接电源：上限暂不生效";
-"settings.charge_limit.status.not_installed" = "未检测到 root helper：不会断开充电（见 README）";
-"settings.charge_limit.status.not_running" = "root helper 未在运行：不会断开充电";
-"settings.charge_limit.status.outdated_helper" = "root helper 版本过旧：请重新运行 install_helper.sh";
-"settings.charge_limit.status.unsupported" = "本机不支持充电抑制（SMC 无可用键），无法断开充电";
+"settings.charge_limit.status.not_installed" = "不会断开充电：root helper 未就绪（见下行）";
+"settings.charge_limit.status.not_running" = "不会断开充电：root helper 未在运行（见下行）";
+"settings.charge_limit.status.outdated_helper" = "不会断开充电：root helper 版本过旧（见下行）";
+"settings.charge_limit.status.unsupported" = "未找到可用的充电抑制键（CH0B / CH0C）：本机无法用这种方式断开充电";
+"settings.charge_limit.status.unrecognized" = "检测到充电控制键，但其取值不在已知范围内，已跳过以免误写（见下方探测结果）";
+"settings.charge_limit.status.smc_unreadable" = "无法生效：root helper 读不到 SMC（见下行）";
+"settings.charge_limit.probe" = "SMC 探测：%@";
+"settings.charge_limit.helper.running" = "root helper：运行中（%@ 前有回执）· SMC %@";
+"settings.charge_limit.helper.smc_ok" = "可读";
+"settings.charge_limit.helper.smc_failed" = "不可读";
+"settings.charge_limit.helper.not_installed" = "root helper：未安装（需 sudo ./install_helper.sh）";
+"settings.charge_limit.helper.not_running" = "root helper：未在运行（已安装但被停用或崩溃）";
+"settings.charge_limit.helper.outdated" = "root helper：版本过旧，请重新运行 install_helper.sh";
 
 /* 历史图表 */
 "chart.history.axis_hint" = "左轴：%  ·  右轴：W / V / A";

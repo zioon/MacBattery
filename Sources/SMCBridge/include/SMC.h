@@ -84,6 +84,28 @@ const char *SMCChargeKey(int index);
 unsigned char SMCChargeAllowValue(void);
 unsigned char SMCChargeInhibitValue(void);
 
+// 只读探测（**永不写入**）：把键是否存在、dataSize、首字节取值带回去。
+// 返回 1 表示键存在（出参有效）；0 表示键不存在（出参被置为 0 / -1）。
+// 这是排查「本机不支持」的唯一手段 —— 用户机器上到底有没有这些键，只有这里能看出来。
+int SMCProbeKey(io_connect_t conn, const char *key, unsigned int *outDataSize, int *outValue);
+
+// ── 键名枚举（只读） ────────────────────────────────────────────────────────
+// 用来回答"这台机器到底有哪些充电相关键"。候选键名是猜的，枚举出来的是事实 ——
+// 机型之间键名并不统一，靠猜键名会一轮一轮地卡住（每轮都要用户重装一次 helper）。
+//
+// 读取 SMC 键总数（特殊键 "#KEY"，ui32）。成功返回 1；数量明显不合理时返回 0。
+int SMCKeyCount(io_connect_t conn, unsigned int *outCount);
+
+// 按索引取键名（SMC_CMD_READ_INDEX），写入 outKey（至少 5 字节，含结尾 NUL）。
+// 成功返回 1；键名含不可打印字符时返回 0（宁可丢掉，也不把乱码当键名上报）。
+int SMCKeyNameAtIndex(io_connect_t conn, unsigned int index, char *outKey);
+
+// 额外「只读探测」候选键的唯一定义处。
+// 这些名字在公开实现里作为充电控制键出现过，但**语义未经确认**，因此只读探测、永不写入。
+// 它们只用于让"本机不支持"这句提示有据可查，不参与任何执行判定。
+int SMCChargeProbeKeyCount(void);
+const char *SMCChargeProbeKey(int index);
+
 // 整机功率候选键的唯一定义处：SMC.swift 与 MacBatteryHelper/main.swift 均从此读取，
 // 避免同一列表在多处不一致。顺序即探测优先级（逐个尝试，取首个读到非零值的键）。
 // 用函数式接口暴露，免去 Swift 侧直接消费 C 数组指针的麻烦。

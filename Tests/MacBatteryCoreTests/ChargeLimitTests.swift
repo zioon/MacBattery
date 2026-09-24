@@ -199,6 +199,115 @@ final class ChargeLimitTests: XCTestCase {
         let status = try JSONDecoder().decode(ChargeLimitWire.Status.self, from: Data(json.utf8))
         XCTAssertNil(status.error)
         XCTAssertFalse(status.supported)
+        // 旧版 helper 不写 probed（新增的可选字段）→ 必须解出 nil 而不是抛错，
+        // 否则 App 会把「旧 helper」误判成「读不到回执 = 没装 helper」。
+        XCTAssertNil(status.probed)
+    }
+
+    func testStatusWithProbesRoundTrips() throws {
+        let status = ChargeLimitWire.Status(proto: ChargeLimitWire.version,
+                                            supported: false,
+                                            inhibited: false,
+                                            keys: [],
+                                            timestamp: 1_700_000_000,
+                                            error: ChargeLimitWire.Status.ErrorCode.noChargeKey,
+                                            probed: [ChargeLimitWire.KeyProbe(key: "CH0B",
+                                                                              present: true,
+                                                                              dataSize: 1,
+                                                                              value: 1,
+                                                                              used: false)])
+        let data = try JSONEncoder().encode(status)
+        XCTAssertEqual(try JSONDecoder().decode(ChargeLimitWire.Status.self, from: data), status)
+    }
+
+    /// `error` 取值是**跨进程契约**：App 靠它分流到不同的提示（例如区分「机型不支持」
+    /// 与「SMC 打不开」）。改字面量就是破坏性变更，两侧必须同时改。
+    func testErrorCodeLiteralsAreStable() {
+        XCTAssertEqual(ChargeLimitWire.Status.ErrorCode.smcOpenFailed, "smc_open_failed")
+        XCTAssertEqual(ChargeLimitWire.Status.ErrorCode.noChargeKey, "no_charge_key")
+    }
+
+    // MARK: - 「为什么不可用」的成因区分
+
+    /// 这是本次要修的核心缺陷：三种成因原先在界面上都是同一句「本机不支持」，
+    /// 用户既无法处理也无法排查。它们必须分开。
+    func testUnavailableReasonDistinguishesCauses() {
+        func status(error: String?, probes: [ChargeLimitWire.KeyProbe]?) -> ChargeLimitWire.Status {
+            ChargeLimitWire.Status(proto: ChargeLimitWire.version,
+                                   supported: false,
+                                   inhibited: false,
+                                   keys: [],
+                                   timestamp: 0,
+                                   error: error,
+                                   probed: probes)
+        }
+
+        // ① 连 SMC 都没打开：环境问题，不是机型不支持。
+        XCTAssertEqual(ChargeLimitWire.unavailableReason(
+            for: status(error: ChargeLimitWire.Status.ErrorCode.smcOpenFailed, probes: nil)),
+                       .smcUnreadable)
+
+        // ② 探测过、一个键都不存在 → 真的没有这些键。
+        XCTAssertEqual(ChargeLimitWire.unavailableReason(
+            for: status(error: ChargeLimitWire.Status.ErrorCode.noChargeKey,
+                        probes: [ChargeLimitWire.KeyProbe(key: "CH0B", present: false,
+                                                          dataSize: 0, value: -1, used: false)])),
+                       .unsupportedHardware)
+
+        // ③ 旧版 helper 不带 probed → 退回「没有可用键」。
+        XCTAssertEqual(ChargeLimitWire.unavailableReason(
+            for: status(error: ChargeLimitWire.Status.ErrorCode.noChargeKey, probes: nil)),
+                       .unsupportedHardware)
+
+        // ④ 键存在、只是取值不在已知范围内 → 缺一个取值映射（可救），不是没有键。
+        XCTAssertEqual(ChargeLimitWire.unavailableReason(
+            for: status(error: ChargeLimitWire.Status.ErrorCode.noChargeKey,
+                        probes: [ChargeLimitWire.KeyProbe(key: "CH0B", present: true,
+                                                          dataSize: 1, value: 1, used: false)])),
+                       .unrecognizedValues)
+
+        // ⑤ smc_open_failed 优先级最高：即使带着探测结果也按环境问题处理。
+        XCTAssertEqual(ChargeLimitWire.unavailableReason(
+            for: status(error: ChargeLimitWire.Status.ErrorCode.smcOpenFailed,
+                        probes: [ChargeLimitWire.KeyProbe(key: "CH0B", present: true,
+                                                          dataSize: 1, value: 0, used: false)])),
+                       .smcUnreadable)
+    }
+
+    /// 探测摘要要能一眼看出「不存在 / 不是单字节 / 取值是多少」三件事。
+    func testKeyProbeSummary() {
+        XCTAssertEqual(ChargeLimitWire.KeyProbe(key: "CHTE", present: false, dataSize: 0,
+                                               value: -1, used: false).summary,
+                       "CHTE=missing")
+        XCTAssertEqual(ChargeLimitWire.KeyProbe(key: "CH0B", present: true, dataSize: 1,
+                                               value: 2, used: true).summary,
+                       "CH0B=0x02")
+        XCTAssertEqual(ChargeLimitWire.KeyProbe(key: "CH0B", present: true, dataSize: 1,
+                                               value: 1, used: false).summary,
+                       "CH0B=0x01")
+        XCTAssertEqual(ChargeLimitWire.KeyProbe(key: "BCLM", present: true, dataSize: 4,
+                                               value: 50, used: false).summary,
+                       "BCLM=size4:50")
+    }
+
+    /// 枚举过滤器：只收 4 字符、前缀命中的键名。
+    ///
+    /// 枚举是为了**不再靠猜键名**，所以前缀刻意放宽（见过 CH0B/CH0C/CHTE/BCLM/BFCL/ACEN
+    /// 这些形态）；但长度必须恰好 4 —— 长度不对说明枚举出来的东西不是键名
+    /// （协议或字节序理解有误），宁可丢掉也不把垃圾当键名上报。
+    func testChargeRelatedKeyFilter() {
+        for name in ["CH0B", "CH0C", "CHTE", "CHWA", "BCLM", "BFCL", "ACEN"] {
+            XCTAssertTrue(ChargeLimitWire.isChargeRelatedKey(name), name)
+        }
+        for name in ["PSTR", "#KEY", "CH0", "CH0BB", "ch0b", "", "F0Ac"] {
+            XCTAssertFalse(ChargeLimitWire.isChargeRelatedKey(name), name)
+        }
+    }
+
+    /// 枚举结果会随每秒一次的回执一起落盘，必须限量，否则会把 /tmp 写爆。
+    func testEnumeratedKeyLimitIsBounded() {
+        XCTAssertGreaterThan(ChargeLimitWire.enumeratedKeyLimit, 0)
+        XCTAssertLessThanOrEqual(ChargeLimitWire.enumeratedKeyLimit, 64)
     }
 
     func testWirePathsAndWindows() {

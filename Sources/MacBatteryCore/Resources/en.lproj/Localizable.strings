@@ -65,10 +65,19 @@
 "settings.charge_limit.status.charging" = "Charging; it will pause at %d%%";
 "settings.charge_limit.status.holding" = "Reached the %d%% limit, charging paused";
 "settings.charge_limit.status.on_battery" = "On battery: the limit is inactive";
-"settings.charge_limit.status.not_installed" = "No root helper detected: charging will not be stopped (see README)";
-"settings.charge_limit.status.not_running" = "The root helper is not running: charging will not be stopped";
-"settings.charge_limit.status.outdated_helper" = "The root helper is outdated: run install_helper.sh again";
-"settings.charge_limit.status.unsupported" = "This Mac does not expose the SMC charge-inhibit keys; charging cannot be stopped";
+"settings.charge_limit.status.not_installed" = "Charging will not be stopped: the root helper is not ready (see below)";
+"settings.charge_limit.status.not_running" = "Charging will not be stopped: the root helper is not running (see below)";
+"settings.charge_limit.status.outdated_helper" = "Charging will not be stopped: the root helper is outdated (see below)";
+"settings.charge_limit.status.unsupported" = "No usable charge-inhibit keys (CH0B / CH0C) found: charging cannot be stopped this way";
+"settings.charge_limit.status.unrecognized" = "Charge-control keys exist but their values are outside the known range — skipped to avoid a wrong write (see probe below)";
+"settings.charge_limit.status.smc_unreadable" = "Cannot take effect: the root helper cannot read SMC (see below)";
+"settings.charge_limit.probe" = "SMC probe: %@";
+"settings.charge_limit.helper.running" = "root helper: running (last reply %@ ago) · SMC %@";
+"settings.charge_limit.helper.smc_ok" = "readable";
+"settings.charge_limit.helper.smc_failed" = "unreadable";
+"settings.charge_limit.helper.not_installed" = "root helper: not installed (run sudo ./install_helper.sh)";
+"settings.charge_limit.helper.not_running" = "root helper: not running (installed but stopped or crashed)";
+"settings.charge_limit.helper.outdated" = "root helper: outdated, run install_helper.sh again";
 
 /* History chart */
 "chart.history.axis_hint" = "Left: %  ·  Right: W / V / A";

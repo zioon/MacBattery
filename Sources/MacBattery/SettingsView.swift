@@ -153,6 +153,23 @@ struct SettingsView: View {
                 .foregroundColor(chargeLimitStatusColor)
                 .fixedSize(horizontal: false, vertical: true)
 
+            // helper 的当前状态：把「有没有人在执行」变成可核对的事实（回执几秒前），
+            // 顺带回答「为什么没生效」。功能关着时也显示 —— 它是这一区块的前置依赖。
+            Text(helperStatusText)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            // SMC 探测结果：只在功能不可用时出现，是「为什么本机不支持」的唯一答案来源。
+            // 内容是键名 + 十六进制取值（语言无关的排查数据），因此不经过 L()。
+            if let probe = limiter.probeSummary {
+                Text(L("settings.charge_limit.probe", probe))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+
             Text(L("settings.charge_limit.hint.helper"))
                 .font(.caption2)
                 .foregroundColor(.secondary)
@@ -206,6 +223,10 @@ struct SettingsView: View {
                 return L("settings.charge_limit.status.outdated_helper")
             case .unsupportedHardware:
                 return L("settings.charge_limit.status.unsupported")
+            case .unrecognizedValues:
+                return L("settings.charge_limit.status.unrecognized")
+            case .smcUnreadable:
+                return L("settings.charge_limit.status.smc_unreadable")
             }
         }
     }
@@ -221,5 +242,54 @@ struct SettingsView: View {
         case .off, .unlimited, .onBattery, .charging:
             return .secondary
         }
+    }
+
+    // MARK: - helper 状态
+
+    /// helper 的当前状态（一行）。
+    ///
+    /// 与上面那条「状态提示」的分工：**这条说的是 helper 本身**（在不在跑、能不能读 SMC），
+    /// 上面那条说的是**功能是否生效**。两者分开，用户才能自己判断"到底是没人干活，
+    /// 还是干不了这个活" —— 这也是「装了 helper 却只看到一句不支持」那次反馈的核心。
+    private var helperStatusText: String {
+        switch limiter.availability {
+        case .ready:
+            return runningHelperText
+        case .unavailable(let reason):
+            switch reason {
+            case .notInstalled:
+                return L("settings.charge_limit.helper.not_installed")
+            case .notRunning:
+                return L("settings.charge_limit.helper.not_running")
+            case .outdatedHelper:
+                return L("settings.charge_limit.helper.outdated")
+            case .smcUnreadable, .unsupportedHardware, .unrecognizedValues:
+                // helper 在跑，只是读不到 SMC / 找不到可用键 —— 状态行照实报"运行中"，
+                // SMC 那一格由 `smcReadable` 决定，不在这里另写一套判断。
+                return runningHelperText
+            }
+        }
+    }
+
+    /// 「运行中」那一行的拼装：三个片段（运行中 / 回执年龄 / SMC 可读性）组合起来，
+    /// 比为一个可变组合写四份完整文案更容易保持一致。
+    ///
+    /// 两个分支刻意写成 if/else 而不是 `L(cond ? "a" : "b")`：后者的参数不是字面量，
+    /// CI 的键存在性检查（只认 `L("...")`）看不见它 —— 拼错只会在界面上原样显示键名。
+    private var runningHelperText: String {
+        let smc: String
+        if limiter.smcReadable {
+            smc = L("settings.charge_limit.helper.smc_ok")
+        } else {
+            smc = L("settings.charge_limit.helper.smc_failed")
+        }
+        return L("settings.charge_limit.helper.running", helperAgeText, smc)
+    }
+
+    /// 回执年龄的人类可读形式。复用既有的复数时长文案，避免为只出现一次的场景再加一串键。
+    private var helperAgeText: String {
+        guard let age = limiter.lastStatusAge else { return L("common.placeholder") }
+        if age < 60 { return LP("duration.seconds", count: Int(age.rounded())) }
+        return LP("duration.minutes", count: Int((age / 60).rounded()))
     }
 }

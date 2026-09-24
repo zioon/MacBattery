@@ -20,19 +20,14 @@ final class ChargeLimiter: ObservableObject {
     enum Availability: Equatable {
         /// helper 在跑、本机也支持：开关打开后就能真的断开充电。
         case ready
-        /// 不可用及其原因（不同原因对应完全不同的排查方向）。
+        /// 不可用及其原因。
         case unavailable(reason: UnavailableReason)
 
-        enum UnavailableReason: Equatable {
-            /// 读不到回执文件：还没装 helper。
-            case notInstalled
-            /// 回执存在但已过期：装了但没在跑（被停用 / 崩溃 / 被卸载）。
-            case notRunning
-            /// 回执协议版本与 App 不一致：装的是旧版 helper，需要重装。
-            case outdatedHelper
-            /// 回执说本机没有可安全写入的充电抑制键。
-            case unsupportedHardware
-        }
+        /// 不可用及其原因（不同原因对应完全不同的排查方向）。
+        ///
+        /// 具体取值定义在 `ChargeLimitWire`（纯逻辑层）：其中「由回执内容推导成因」是纯函数，
+        /// 放在那边才能在 CI 里被单测覆盖 —— 本机没有 Swift 工具链，测试跑不到的映射等于没写。
+        typealias UnavailableReason = ChargeLimitWire.UnavailableReason
     }
 
     /// 界面展示用的状态。
@@ -60,6 +55,20 @@ final class ChargeLimiter: ObservableObject {
     @Published private(set) var limitPercent = ChargeLimitPolicy.defaultPercent
     /// helper 回执中「硬件实际处于抑制中」（经过读回校验，是事实而非意图）。
     @Published private(set) var inhibited = false
+    /// 候选 SMC 键的只读探测摘要（`CH0B=0x02  CHTE=missing  BCLM=size4:50`）。
+    ///
+    /// 只在功能不可用时非空：这是「为什么本机不支持」的**唯一**答案来源 ——
+    /// 键不存在、键存在但取值不认识、SMC 打不开，三种情况对用户意味着完全不同的动作。
+    @Published private(set) var probeSummary: String?
+    /// 最近一次回执的年龄（秒）；`nil` = 读不到回执（没装 / 没跑 helper）。
+    ///
+    /// 界面用它把「helper 在跑」这句话变成**可核对的事实**（回执 2 秒前），
+    /// 而不是一句用户无法验证的断言 —— 排查「功能没生效」时，第一件事就是确认心跳还在跳。
+    @Published private(set) var lastStatusAge: TimeInterval?
+    /// SMC 是否可读。由回执推断，而不是另开一次探测：
+    /// helper 能写出 `supported` / `keys` 就说明它成功打开了 SMC，
+    /// 只有 `smc_open_failed` 表示连连接都没建立。
+    @Published private(set) var smcReadable = false
 
     private static let logger = Logger(subsystem: "com.zioon.macbattery", category: "charge-limit")
 
@@ -76,6 +85,9 @@ final class ChargeLimiter: ObservableObject {
     private var lastStatusRead: Date?
     private var statusReadInFlight = false
     private var writeInFlight = false
+    /// 最近一次「不可用」的补充说明（SMC 探测摘要），只用于日志。
+    /// 让「开关点了没反应」这类问题在日志里就有答案，不必让用户去 /tmp 里翻 JSON。
+    private var logUnavailableDetail: String?
 
     init() {
         // 首次回执读取刻意**同步**完成：设置面板与挂件可能在第一帧就要显示状态，
@@ -227,32 +239,66 @@ final class ChargeLimiter: ObservableObject {
         }
     }
 
-    /// 把回执翻译成可用性状态。四条失败路径各有各的原因，对应界面上的不同提示。
+    /// 把回执翻译成可用性状态。每条失败路径各有各的原因，对应界面上的不同提示。
     private func apply(status: ChargeLimitWire.Status?, now: Date) {
         guard let status else {
+            // 读不到回执 = helper 没装 / 没在跑，此时「它能不能读 SMC」无从谈起。
+            lastStatusAge = nil
+            smcReadable = false
             setAvailability(.unavailable(reason: .notInstalled))
             inhibited = false
+            probeSummary = nil
+            logUnavailableDetail = nil
             return
         }
+        // 回执年龄先算出来：界面上「运行中」要能核对（回执 2 秒前），而不是一句空断言。
+        // 用 max(0, ·) —— 两个进程的时钟可能有一点点偏差，负数会让界面显示「-1 秒前」。
+        lastStatusAge = max(0, now.timeIntervalSince1970 - status.timestamp)
+
         // 版本不符 = 老 helper 配新 App。执行与否由 helper 侧决定（它同样会拒绝），
         // App 只负责把「请重装 helper」这件事说清楚。
         guard status.proto == ChargeLimitWire.version else {
+            // 旧 helper 的字段不能按新语义解读，因此「SMC 可读」也不下结论。
+            smcReadable = false
             setAvailability(.unavailable(reason: .outdatedHelper))
             inhibited = false
+            probeSummary = nil
+            logUnavailableDetail = nil
             return
         }
         guard now.timeIntervalSince1970 - status.timestamp <= ChargeLimitWire.statusFreshness else {
+            // 回执过期 = helper 没在跑，它上一次报的 SMC 状态已经不代表现在。
+            smcReadable = false
             setAvailability(.unavailable(reason: .notRunning))
             inhibited = false
+            probeSummary = nil
+            logUnavailableDetail = nil
             return
         }
         guard status.supported else {
-            setAvailability(.unavailable(reason: .unsupportedHardware))
+            // `supported == false` 有三种成因，必须分开：机型没救 / 缺取值映射 / SMC 打不开。
+            // 先填诊断信息再切状态 —— 状态切换里会记日志，晚一步就会把上一条诊断记进日志。
+            smcReadable = status.error != ChargeLimitWire.Status.ErrorCode.smcOpenFailed
+            probeSummary = Self.summarize(status.probed)
+            logUnavailableDetail = probeSummary
+            setAvailability(.unavailable(reason: ChargeLimitWire.unavailableReason(for: status)))
             inhibited = false
             return
         }
+        smcReadable = true
         setAvailability(.ready)
         inhibited = status.inhibited
+        probeSummary = nil
+        logUnavailableDetail = nil
+    }
+
+    private static func summarize(_ probes: [ChargeLimitWire.KeyProbe]?) -> String? {
+        // 只留存在的键：把 missing 也列出来会让这一行长得没法看，而"键不存在"这个信息
+        // 已经被 `unsupportedHardware` 这条提示覆盖了。
+        guard let probes else { return nil }
+        let present = probes.filter { $0.present }
+        guard !present.isEmpty else { return nil }
+        return present.map { $0.summary }.joined(separator: "  ")
     }
 
     /// 可用性变化时记一行日志。排查「开关点了没反应」时，这一行直接给出方向：
@@ -266,7 +312,8 @@ final class ChargeLimiter: ObservableObject {
         case .ready:
             Self.logger.notice("充电上限：root helper 就绪")
         case .unavailable(let reason):
-            Self.logger.error("充电上限：不可用（\(String(describing: reason), privacy: .public)）")
+            let detail = logUnavailableDetail ?? "-"
+            Self.logger.error("充电上限：不可用（\(String(describing: reason), privacy: .public)）探测 \(detail, privacy: .public)")
         }
     }
 
@@ -276,7 +323,8 @@ final class ChargeLimiter: ObservableObject {
         case .ready:
             Self.logger.notice("充电上限：已启用（helper 就绪）")
         case .unavailable(let reason):
-            Self.logger.error("充电上限：已启用但 helper 不可用（\(String(describing: reason), privacy: .public)）")
+            let detail = logUnavailableDetail ?? "-"
+            Self.logger.error("充电上限：已启用但不可用（\(String(describing: reason), privacy: .public)）探测 \(detail, privacy: .public)")
         }
     }
 

@@ -32,6 +32,77 @@ import SMCBridge
 let outputPath = "/tmp/macbattery_power.json"
 let interval: UInt32 = 1  // 秒
 
+/// 本机 SMC 键名快照（惰性枚举、只枚举一次）。
+///
+/// 为什么需要它：候选键名（`CH0B` / `CH0C` / `BCLM` …）是我根据公开实现列出来的**猜测**。
+/// 猜错就永远卡在「没找到可用的键」，而且每猜一轮都要用户重装一次 helper。
+/// 枚举 SMC 键命名空间拿到的是**这台机器真实拥有的全部键名**，按前缀筛一遍即可给出确定答案。
+///
+/// 放进类而不是全局 `var`：可变全局状态在闭包里读写容易踩并发/exclusivity 的坑，
+/// 类实例的内部状态语义清楚得多。
+final class SMCKeySnapshot {
+    private var cached: [String]?
+
+    /// 本机的「充电相关」键名（只读探测用）。首次调用时枚举并缓存。
+    func chargeRelatedKeys(_ conn: io_connect_t) -> [String] {
+        if let cached { return cached }
+        var discovered = enumerateChargeRelatedKeys(conn)
+        discovered = Self.normalizedOrder(conn, names: discovered)
+        cached = discovered
+        return discovered
+    }
+
+    /// 遍历 SMC 键命名空间，留下充电相关的键名（去重、限量）。
+    private func enumerateChargeRelatedKeys(_ conn: io_connect_t) -> [String] {
+        var count: UInt32 = 0
+        // 枚举不到（读不了 "#KEY"）就返回空 —— 上层的候选列表仍然会被探测，
+        // 只是少了一份"这台机器到底有什么"的完整答案，不影响其它功能。
+        guard SMCKeyCount(conn, &count) == 1, count > 0 else { return [] }
+
+        var names: [String] = []
+        var seen = Set<String>()
+        var buffer = [CChar](repeating: 0, count: 8)
+
+        for index in 0..<count {
+            let ok = buffer.withUnsafeMutableBufferPointer { pointer -> Int32 in
+                SMCKeyNameAtIndex(conn, index, pointer.baseAddress)
+            }
+            guard ok == 1 else { continue }
+            let name = String(cString: buffer)
+            guard ChargeLimitWire.isChargeRelatedKey(name) else { continue }
+            guard seen.insert(name).inserted else { continue }
+            names.append(name)
+            if names.count >= ChargeLimitWire.enumeratedKeyLimit { break }
+        }
+        return names
+    }
+
+    /// 校验枚举出来的键名**顺序**是否读得通。
+    ///
+    /// SMC 把 4 个字符打包成一个整数返回，字节序理解反了会得到 `B0HC` 而不是 `CH0B`
+    /// —— 两者都是可打印 ASCII，光看字符没法发现。这里用「按名读一次」当判据：
+    /// 顺序对了就至少有个样本读得到；一个都读不到就整体反转再试一次。
+    /// 两条路都不通时原样返回（上层会把它们显示为缺失，不会误报成"存在"）。
+    private static func normalizedOrder(_ conn: io_connect_t, names: [String]) -> [String] {
+        // 显式 withCString 转换，不用 Swift 的 String→const char* 隐式转换：
+        // 这里的指针只在这一行内有效，写法明确一点更不容易被误改。
+        func readable(_ name: String) -> Bool {
+            name.withCString { SMCProbeKey(conn, $0, nil, nil) == 1 }
+        }
+
+        if names.prefix(5).contains(where: readable) {
+            return names
+        }
+        let reversed = names.map { String($0.reversed()) }
+        if reversed.prefix(5).contains(where: readable) {
+            return reversed
+        }
+        return names
+    }
+}
+
+let keySnapshot = SMCKeySnapshot()
+
 // 优雅停机：捕获 SIGTERM / SIGINT 退出，便于 launchd 重启。
 signal(SIGTERM) { _ in exit(0) }
 signal(SIGINT) { _ in exit(0) }
@@ -54,7 +125,12 @@ while true {
             // SMC 打不开（休眠唤醒后偶发）→ 明确回报"暂不可用"。
             // 不写回执的话，App 会因为回执过期而误报"helper 未在运行"，
             // 把一次可自愈的故障描述成"需要重装"，指向完全错误的排查方向。
-            writeChargeStatus(supported: false, inhibited: false, keys: [], error: "smc_open_failed")
+            // 带上专门的错误码，让 App 能把它与"机型不支持"区分开 —— 两者的后续动作完全不同。
+            writeChargeStatus(supported: false,
+                              inhibited: false,
+                              keys: [],
+                              error: ChargeLimitWire.Status.ErrorCode.smcOpenFailed,
+                              probed: nil)
         }
 
         writePower(watts)
@@ -135,7 +211,7 @@ func applyChargeState(_ conn: io_connect_t,
         }
 
         guard SMCWriteByte(conn, rawKey, target) == 1 else {
-            failure = "write_failed"
+            failure = ChargeLimitWire.Status.ErrorCode.writeFailed
             continue
         }
 
@@ -143,20 +219,59 @@ func applyChargeState(_ conn: io_connect_t,
         if SMCReadByte(conn, rawKey, &readback) == 1, readback == target {
             verified = true
         } else {
-            failure = "verify_failed"
+            failure = ChargeLimitWire.Status.ErrorCode.verifyFailed
         }
     }
 
     if usedKeys.isEmpty {
-        // 一个可安全写入的键都没有 → 本机不支持，功能无法执行。
-        return (false, [], "no_charge_key")
+        // 一个可安全写入的键都没有 → 功能无法执行（"为什么"由 probeChargeKeys 报回 App）。
+        return (false, [], ChargeLimitWire.Status.ErrorCode.noChargeKey)
     }
     guard verified else {
         // 键在、但没写成功（或被固件挡回）→ 不能声称已抑制。
-        return (false, usedKeys, failure ?? "no_effect")
+        return (false, usedKeys, failure ?? ChargeLimitWire.Status.ErrorCode.noEffect)
     }
     // 部分键失败、部分成功时依然如实带上 error，供排查（App 界面只看 inhibited）。
     return (inhibit, usedKeys, failure)
+}
+
+/// 只读探测全部候选键（含枚举出来的本机键名），供 App 回答「为什么显示不支持」。
+///
+/// 两种成因必须分开：**键根本不存在**（没救）与**键存在但取值不认识**（缺一个取值映射）。
+/// 没有这层观测时两者在回执里长得一样，用户只能看到一句无解的错误提示。
+/// `used` 标出哪些键真被采用（参与写入 / 校验），其余即使存在也只是"看到了"。
+func probeChargeKeys(_ conn: io_connect_t, usedKeys: [String]) -> [ChargeLimitWire.KeyProbe] {
+    var probes: [ChargeLimitWire.KeyProbe] = []
+    // 同一个键只报一次：候选列表与枚举结果必然重叠（CH0B/CH0C 既在候选里、也会被枚举到）。
+    var seen = Set<String>()
+
+    func probe(_ key: String) {
+        guard seen.insert(key).inserted else { return }
+        var size: UInt32 = 0
+        var value: Int32 = -1
+        // 显式 `withCString`：不依赖 Swift 的 String→const char* 隐式转换
+        //（它在参数类型是 IUO 时不保证生效）。`withCString` 的闭包是**非逃逸**的，
+        // 所以可以在里面用本地变量的 `&size` / `&value` 当 C 出参。
+        let present = key.withCString { SMCProbeKey(conn, $0, &size, &value) == 1 }
+        probes.append(ChargeLimitWire.KeyProbe(key: key,
+                                              present: present,
+                                              dataSize: Int(size),
+                                              value: Int(value),
+                                              used: usedKeys.contains(key)))
+    }
+
+    // ① 可写白名单（执行判定只看这两个）→ ② 额外候选 → ③ 枚举出来的本机键名。
+    // 顺序有意义：前两组决定了下面的取值判定，枚举组纯粹是"这台机器还有什么"。
+    for i in 0..<SMCChargeKeyCount() {
+        if let rawKey = SMCChargeKey(i) { probe(String(cString: rawKey)) }
+    }
+    for i in 0..<SMCChargeProbeKeyCount() {
+        if let rawKey = SMCChargeProbeKey(i) { probe(String(cString: rawKey)) }
+    }
+    for key in keySnapshot.chargeRelatedKeys(conn) {
+        probe(key)
+    }
+    return probes
 }
 
 /// 每轮执行一次：读指令 → 施加 → 写回执。
@@ -168,7 +283,8 @@ func updateChargeLimit(_ conn: io_connect_t) {
     writeChargeStatus(supported: !result.keys.isEmpty,
                       inhibited: result.inhibited,
                       keys: result.keys,
-                      error: result.error)
+                      error: result.error,
+                      probed: probeChargeKeys(conn, usedKeys: result.keys))
 }
 
 // MARK: - 写入
@@ -176,13 +292,15 @@ func updateChargeLimit(_ conn: io_connect_t) {
 func writeChargeStatus(supported: Bool,
                        inhibited: Bool,
                        keys: [String],
-                       error: String?) {
+                       error: String?,
+                       probed: [ChargeLimitWire.KeyProbe]?) {
     let status = ChargeLimitWire.Status(proto: ChargeLimitWire.version,
                                         supported: supported,
                                         inhibited: inhibited,
                                         keys: keys,
                                         timestamp: Date().timeIntervalSince1970,
-                                        error: error)
+                                        error: error,
+                                        probed: probed)
     guard let data = try? JSONEncoder().encode(status) else { return }
     writeAtomically(data, to: ChargeLimitWire.statusPath)
 }

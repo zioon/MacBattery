@@ -152,6 +152,30 @@ const char *SMCChargeKey(int index) {
 unsigned char SMCChargeAllowValue(void) { return SMC_CHARGE_ALLOW_VALUE; }
 unsigned char SMCChargeInhibitValue(void) { return SMC_CHARGE_INHIBIT_VALUE; }
 
+// 额外「只读探测」候选键。这些名字在公开实现里作为充电控制键出现过，但语义未经确认，
+// 因此**只读不写**：它们只用来回答"这台机器有哪些相关键"，不参与任何执行判定。
+// 顺序即输出顺序（App 会把它们拼成一行诊断信息）。
+static const char *const kSMCChargeProbeKeys[] = {
+    "CHTE",  // 部分新机型上的充电终止键
+    "CH0I",  // AlDente 等实现提到过的一组
+    "CH0J",
+    "CH0K",
+    "ACEN",  // AC 使能类
+    "CHWA",
+    "BCLM",  // Intel 上的"最大充电百分比"键（取值是百分比，语义与 CH0B 不同）
+};
+
+int SMCChargeProbeKeyCount(void) {
+  return (int)(sizeof(kSMCChargeProbeKeys) / sizeof(kSMCChargeProbeKeys[0]));
+}
+
+const char *SMCChargeProbeKey(int index) {
+  if (index < 0 || index >= SMCChargeProbeKeyCount()) {
+    return NULL;
+  }
+  return kSMCChargeProbeKeys[index];
+}
+
 // ── 单字节读写 ──────────────────────────────────────────────────────────────
 
 // 把 4 字符键名打包成 SMC 协议里的 32 位整数。
@@ -163,6 +187,95 @@ static unsigned int SMCKeyToUInt32(const char *key) {
          ((unsigned int)(unsigned char)key[1] << 16) |
          ((unsigned int)(unsigned char)key[2] << 8) |
          ((unsigned int)(unsigned char)key[3]);
+}
+
+// 只读探测：键是否存在 / dataSize / 首字节取值。
+// 不存在或读失败时把出参写成"空"（0 / -1），而不是留着上一次的值 —— 调用方据此区分
+// 「键存在但值是 0」与「键不存在」，把两者混起来正是这次要修的缺陷。
+int SMCProbeKey(io_connect_t conn, const char *key, unsigned int *outDataSize,
+                int *outValue) {
+  SMCKeyData_t val;
+  if (SMCReadKey(conn, key, &val) != kIOReturnSuccess) {
+    if (outDataSize) {
+      *outDataSize = 0;
+    }
+    if (outValue) {
+      *outValue = -1;
+    }
+    return 0;
+  }
+  if (outDataSize) {
+    *outDataSize = val.keyInfo.dataSize;
+  }
+  if (outValue) {
+    *outValue =
+        val.keyInfo.dataSize >= 1 ? (int)(unsigned char)val.bytes[0] : -1;
+  }
+  return 1;
+}
+
+// ── 键名枚举（只读） ────────────────────────────────────────────────────────
+
+int SMCKeyCount(io_connect_t conn, unsigned int *outCount) {
+  SMCKeyData_t val;
+  // "#KEY" 是 SMC 的特殊键，其 ui32 值即键总数。
+  if (SMCReadKey(conn, "#KEY", &val) != kIOReturnSuccess) {
+    return 0;
+  }
+  if (val.keyInfo.dataSize != 4) {
+    return 0;
+  }
+  unsigned int n = ((unsigned int)(unsigned char)val.bytes[0] << 24) |
+                   ((unsigned int)(unsigned char)val.bytes[1] << 16) |
+                   ((unsigned int)(unsigned char)val.bytes[2] << 8) |
+                   ((unsigned int)(unsigned char)val.bytes[3]);
+  // 上限守卫：读到的若是垃圾（几百万），上层会拿着它遍历一整天。
+  if (n == 0 || n > 100000) {
+    return 0;
+  }
+  if (outCount) {
+    *outCount = n;
+  }
+  return 1;
+}
+
+int SMCKeyNameAtIndex(io_connect_t conn, unsigned int index, char *outKey) {
+  SMCKeyData_t inputStructure;
+  SMCKeyData_t outputStructure;
+
+  memset(&inputStructure, 0, sizeof(SMCKeyData_t));
+  memset(&outputStructure, 0, sizeof(SMCKeyData_t));
+
+  inputStructure.data8 = SMC_CMD_READ_INDEX;
+  inputStructure.data32 = index;
+  if (SMCCall(conn, KERNEL_INDEX_SMC, &inputStructure, &outputStructure) !=
+      kIOReturnSuccess) {
+    return 0;
+  }
+
+  // 键名按"首字符在高位"打包 —— 与 SMCReadKey 里 `inputStructure.key` 的打包顺序一致
+  // （同一套字节序，不引入第二种约定）。
+  unsigned int packed = outputStructure.key;
+  char name[4];
+  name[0] = (char)((packed >> 24) & 0xFF);
+  name[1] = (char)((packed >> 16) & 0xFF);
+  name[2] = (char)((packed >> 8) & 0xFF);
+  name[3] = (char)(packed & 0xFF);
+
+  // 只接受 4 个可打印 ASCII。字节序万一理解反了，这里会挡掉一批乱码；
+  // 剩下的顺序问题由调用方用"按名读一次"自校验（见 MacBatteryHelper）。
+  for (int i = 0; i < 4; i++) {
+    unsigned char c = (unsigned char)name[i];
+    if (c < 0x20 || c > 0x7E) {
+      return 0;
+    }
+  }
+
+  if (outKey) {
+    memcpy(outKey, name, 4);
+    outKey[4] = '\0';
+  }
+  return 1;
 }
 
 int SMCReadByte(io_connect_t conn, const char *key, unsigned char *outValue) {
