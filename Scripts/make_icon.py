@@ -4,13 +4,23 @@
 几何比例、配色、分段圆环逻辑全部照搬 Sources/MacBattery/PowerHUDView.swift 的
 一帧运行结果，因此改挂件 UI 后重跑本脚本即可得到同步的新图标。
 
+本版图形对照的挂件状态（2026-09-24 的运行截图）：
+    电量 100%（环满格、薄荷绿）、CPU ≈ 24.5%、RAM ≈ 53.4%、
+    三行读数 9.1 W / ⚡ 0:06 / 剩余 4:42。
+
+底盘有两套（`THEME` 切换）：`light` 浅色玻璃（对应挂件压在浅色桌面上的样子，
+即那张截图）、`dark` 深色玻璃。两套只用同一份几何，换底盘不动图形。
+
 用法:
     python Scripts/make_icon.py
+
+依赖:
+    pip install pillow numpy
 
 产物:
     Resources/AppIcon.png           1024x1024 母版
     Resources/AppIcon.iconset/*.png macOS iconset
-    Resources/AppIcon.icns          macOS 图标
+    Resources/AppIcon.icns          macOS 图标（CI 会把它塞进 .app 的 Resources/）
 """
 
 import io
@@ -30,75 +40,112 @@ SS = 4               # 超采样倍数
 N = SIZE * SS
 
 # ---------------------------------------------------------------- 挂件比例
-# 全部取自 PowerHUDView.swift 中相对 58pt 底框的比例
+# 全部取自 PowerHUDView.swift 中相对 58pt 底框的比例。
+# 图标里「挂件的 58pt 底盘」= ICON_BOX，于是所有元素与挂件同比例放大，
+# 改挂件尺寸时只要 ICON_BOX 不变，图形就不会走样。
 R_RING_W = 4.0 / 58.0
-R_RING_CORNER = 14.0 / 58.0
 R_INNER_W = 3.0 / 58.0
-R_SYS_F = 12.0 / 58.0
-R_SYS_UNIT = 6.5 / 58.0
-R_CHG_F = 8.5 / 58.0
-R_CHG_UNIT = 6.0 / 58.0
-R_VGAP = 1.5 / 58.0
-R_HGAP1 = 1.5 / 58.0
-R_HGAP2 = 2.0 / 58.0
+R_SYS_F = 12.0 / 58.0       # 整机功率
+R_SYS_UNIT = 6.5 / 58.0     # 单位 W
+R_CHG_F = 8.5 / 58.0        # 第二行数值
+R_REM_F = 5.5 / 58.0        # 第三行「剩余 h:mm」
+R_VGAP = 1.5 / 58.0         # 三行之间的行距
+R_HGAP1 = 1.5 / 58.0        # 数值 ↔ 单位 W
+R_HGAP2 = 2.0 / 58.0        # 闪电 ↔ 第二行数值
+R_HGAP3 = 1.4 / 58.0        # 「剩余」 ↔ 时长
 
 # ---------------------------------------------------------------- 图标那一帧
-# 取值来自挂件真实运行截图（对照 Resources/实际运行图.png 实测各色段弧长）：
-#   橙段 0→0.375、蓝段 0.375→0.5（CPU≈25%）、紫段 0.5→0.79（RAM≈58%）、右上缺口 0.79→1。
-BATTERY = 0.375       # 电量，决定充电环颜色（<0.2 红 / <0.4 琥珀 / 其余绿）
-CPU = 0.25            # CPU 占用，前半环（蓝段 0.375→0.5，与橙段严格相邻不重叠）
-RAM = 0.58            # 内存占用，后半环（紫段 0.5→0.79，留出右上缺口）
-SYS_W = "9.2"         # 整机功率
-CHG_W = "9.6"         # 充电功率
-CHARGING = True       # 充电中 -> 黄色闪电
+# 弧长取自挂件运行截图实测（占各自半环的比例）：
+#   蓝段（CPU）占上半环 24.5%、紫段（RAM）占下半环 53.4%，
+#   两段共用同一基点 = 内环的「右边中点」。
+LEVEL = 1.00          # 电量：1.0 -> 充电环满格薄荷绿
+CPU = 0.2453          # CPU 弧长占「上半环」的比例（自右边中点向上生长）
+RAM = 0.5343          # RAM 弧长占「下半环」的比例（自右边中点向下生长）
+SYS_W = "9.1"         # 整机功率
+CHG_T = "0:06"        # 使用电池时长
+REM_LABEL = "剩余"     # 预计剩余时间的前缀
+REM_T = "4:42"
 
 # ---------------------------------------------------------------- 配色
-BAR_RED = (255, 77, 77)        # Color(1.0, 0.30, 0.30)
-BAR_AMBER = (255, 158, 46)     # Color(1.0, 0.62, 0.18)
-BAR_GREEN = (51, 219, 115)     # Color(0.20, 0.86, 0.45)
-CPU_BLUE = (64, 140, 255)      # Color(0.25, 0.55, 1.0)
-RAM_PURPLE = (191, 89, 242)    # Color(0.75, 0.35, 0.95)
-BOLT_ON = (255, 214, 10)
-BOLT_OFF = (150, 155, 165)
-BG_TOP = (33, 38, 48)
-BG_BOTTOM = (9, 11, 15)
+# 环色与 PowerHUDView.levelColor(1.0) / cpuColor / ramColor 的 sRGB 值一致，两套底盘共用。
+LEVEL_GREEN = (41, 217, 158)    # Color(0.16, 0.85, 0.62)
+CPU_BLUE = (64, 140, 255)       # Color(0.25, 0.55, 1.0)
+RAM_PURPLE = (191, 89, 242)     # Color(0.75, 0.35, 0.95)
+GLOW_RADIUS = 18.0              # 环色柔光（挂件充电时的 levelColor 外发光）
+GLOW_ALPHA = 0.18
+
+# 底盘两套。挂件的底盘是「半透明黑 + 毛玻璃」（black 0.32），压在浅色桌面上就成了
+# 截图里那个灰（实测 #ADADAD = 255×0.68），压在深色桌面上则是深色玻璃。
+# 图标不能半透明，所以两套各自做成不透明表面，文字色随之反转（浅底上白字对比度
+# 只有约 2:1，是截图里唯一不可用的地方，必须改成深墨）。
+THEME = "light"                 # "light" | "dark"
+
+PALETTES = {
+    "dark": {
+        "plate": [(0.00, (44, 50, 62)), (0.55, (25, 30, 38)), (1.00, (14, 17, 22))],
+        "ink": (255, 255, 255),     # 文字 / 闪电：white 1.0|0.9|0.6
+        "track_inner": 0.15,        # 内环底环：挂件的 white 0.15
+        "track_outer": 0.28,        # 充电环底环：挂件的 white 0.28
+    },
+    "light": {
+        # 浅色玻璃：顶端偏白、底端落回截图里那个灰（#AEB6BF ≈ 截图底盘 #ADADAD）
+        "plate": [(0.00, (216, 222, 228)), (0.55, (196, 203, 211)), (1.00, (174, 182, 191))],
+        "ink": (31, 36, 44),        # 深墨，替掉白字
+        "track_inner": 0.34,        # 底环仍比底盘亮（与截图同向），浅底上要提亮才看得见
+        "track_outer": 0.34,
+    },
+}
 
 
-def bar_color(p):
-    """对应 PowerHUDView.swift 中 barColor 的三档阈值。"""
-    if p < 0.2:
-        return BAR_RED
-    if p < 0.4:
-        return BAR_AMBER
-    return BAR_GREEN
+def level_color(p):
+    """对应 PowerHUDView.levelColor(for:)：0 红 → 100% 薄荷绿，分段线性插值。"""
+    stops = [(0.00, (255, 59, 48)), (0.20, (255, 107, 46)), (0.40, (255, 191, 51)),
+             (0.60, (158, 230, 64)), (0.80, (61, 224, 107)), (1.00, (41, 217, 158))]
+    p = min(max(p, 0.0), 1.0)
+    for (pa, ca), (pb, cb) in zip(stops, stops[1:]):
+        if p <= pb:
+            t = (p - pa) / (pb - pa) if pb > pa else 0.0
+            return tuple(int(round(ca[i] + (cb[i] - ca[i]) * t)) for i in range(3))
+    return stops[-1][1]
 
 
-FONT_CANDIDATES = [
-    r"C:\Windows\Fonts\ARLRDBD.TTF",   # Arial Rounded MT Bold，最接近 SF Rounded
+LATIN_FONT_CANDIDATES = [
+    r"C:\Windows\Fonts\ARLRDBD.TTF",                        # Arial Rounded MT Bold
+    "/System/Library/Fonts/Supplemental/Arial Rounded Bold.ttf",
     r"C:\Windows\Fonts\segoeuib.ttf",
     r"C:\Windows\Fonts\verdanab.ttf",
+    "/System/Library/Fonts/Supplemental/Verdana Bold.ttf",
+]
+
+CJK_FONT_CANDIDATES = [
+    r"C:\Windows\Fonts\msyh.ttc",                            # 微软雅黑
+    r"C:\Windows\Fonts\msyhbd.ttc",
+    r"C:\Windows\Fonts\simhei.ttf",
+    "/System/Library/Fonts/PingFang.ttc",                    # 苹方
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
 ]
 
 # 画布边长（1024 坐标系）
 ICON_BOX = 824.0        # 图标方形外框（macOS 图标栅格 824/1024）
-RING_BOX = 640.0        # 充电环外框
+TILE_CORNER = 185.0     # 外框圆角（≈ macOS 图标栅格的 185/824）
 
-# 闪电多边形（归一化坐标）
-BOLT = [(0.68, 0.00), (0.16, 0.56), (0.44, 0.56),
-        (0.32, 1.00), (0.84, 0.42), (0.56, 0.42)]
+# 闪电多边形（归一化坐标，取自与设计稿一致的轮廓；外框 61x78）
+BOLT = [(52 / 61.0, 0.00), (8 / 61.0, 45 / 78.0), (32 / 61.0, 45 / 78.0),
+        (23 / 61.0, 78 / 78.0), (61 / 61.0, 30 / 78.0), (36 / 61.0, 30 / 78.0)]
+BOLT_ASPECT = 61.0 / 78.0
 
 
 # ---------------------------------------------------------------- 基础工具
-def pick_font():
-    for path in FONT_CANDIDATES:
+def pick_font(candidates):
+    for path in candidates:
         if os.path.exists(path):
             return path
-    raise SystemExit("找不到可用字体: " + ", ".join(FONT_CANDIDATES))
+    raise SystemExit("找不到可用字体: " + ", ".join(candidates))
 
 
-def font(size_units):
+def font(path, size_units):
     """size_units 为 1024 坐标系下的字号。"""
-    return ImageFont.truetype(pick_font(), int(round(size_units * SS)))
+    return ImageFont.truetype(path, int(round(size_units * SS)))
 
 
 def over(dst, rgb, alpha):
@@ -108,9 +155,15 @@ def over(dst, rgb, alpha):
     dst[..., 3:4] = a + dst[..., 3:4] * (1.0 - a)
 
 
-def vramp(top, bottom, ya=0.0, yb=float(SIZE)):
-    t = np.clip((np.arange(N, dtype=np.float32) / SS - ya) / (yb - ya), 0.0, 1.0)
-    return (top + (bottom - top) * t)[:, None]
+def vgrad(stops):
+    """按 (位置, rgb) 停靠点做竖向渐变。"""
+    t = np.arange(N, dtype=np.float32) / (SS * SIZE)
+    out = np.empty((N, N, 3), dtype=np.float32)
+    pos = [s[0] for s in stops]
+    for ch in range(3):
+        val = [s[1][ch] / 255.0 for s in stops]
+        out[..., ch] = np.interp(t, pos, val)[:, None]
+    return out
 
 
 def color(c):
@@ -159,7 +212,7 @@ def rounded_rect_loop(x0, y0, x1, y1, r, seg=90):
 
 
 def sub_path(pts, t0, t1):
-    """按周长比例截取折线（t 从 0 起算，0 = 上边中点，顺时针）。"""
+    """按周长比例截取折线（t = 0 在右边中点，顺时针）。"""
     p = np.asarray(pts, dtype=np.float64)
     seg = np.sqrt(((p[1:] - p[:-1]) ** 2).sum(axis=1))
     cum = np.concatenate([[0.0], np.cumsum(seg)])
@@ -210,114 +263,116 @@ def soft(dst, mask, rgb, radius, alpha):
 
 # ---------------------------------------------------------------- 绘制
 def render():
-    # 环的几何：与 PowerHUDView 的 ringStrokeRadius / innerRingInset 推导一致
-    x0 = y0 = (SIZE - RING_BOX) / 2.0
-    x1 = y1 = x0 + RING_BOX
-    ring_w = R_RING_W * RING_BOX
-    ring_corner = R_RING_CORNER * RING_BOX
-    charge_inner_r = ring_corner - ring_w           # 充电环内壁圆角
-    inner_w = R_INNER_W * RING_BOX
-    inner_inset = ring_w + inner_w / 2.0            # 内环路径内缩
+    latin = pick_font(LATIN_FONT_CANDIDATES)
+    cjk = pick_font(CJK_FONT_CANDIDATES)
+    pal = PALETTES[THEME]
+    INK = color(pal["ink"])
+    WHITE = color((255, 255, 255))
+
+    # 环的几何：与 PowerHUDView 的 ringStrokeRadius / innerRingInset 推导一致。
+    # 挂件的充电环外壁与底盘外壁重合，所以充电环外框 = 图标外框 ICON_BOX。
+    x0 = y0 = (SIZE - ICON_BOX) / 2.0
+    x1 = y1 = x0 + ICON_BOX
+    ring_w = R_RING_W * ICON_BOX
+    charge_inner_r = TILE_CORNER - ring_w        # 充电环内壁圆角
+    inner_w = R_INNER_W * ICON_BOX
+    inner_inset = ring_w + inner_w / 2.0         # 内环路径内缩
 
     canvas = np.zeros((N, N, 4), dtype=np.float32)
 
-    # 1) 图标底盘：与充电环严格平行的圆角矩形 + 深色玻璃竖向渐变 + 左上柔光
-    #    同心的圆角矩形只要「圆角差 = 外框差 / 2」就是一对平行等距曲线，
-    #    于是底盘、充电环内外缘、内环内外缘、CPU/RAM 的法向间距处处相等。
-    b0, b1 = (SIZE - ICON_BOX) / 2.0, (SIZE + ICON_BOX) / 2.0
-    bg_corner = ring_corner + (x0 - b0)
-    sq = rr_mask(b0, b0, b1, b1, bg_corner)
-    g = np.linspace(0.0, 1.0, N, dtype=np.float32)[:, None]
-    bg = np.empty((N, N, 3), dtype=np.float32)
-    for ch in range(3):
-        bg[..., ch] = (BG_TOP[ch] + (BG_BOTTOM[ch] - BG_TOP[ch]) * g) / 255.0
-    xg = (np.arange(N, dtype=np.float32) / SS / SIZE)[None, :]
-    yg = (np.arange(N, dtype=np.float32) / SS / SIZE)[:, None]
-    sheen = np.exp(-(((xg - 0.30) ** 2 + (yg - 0.16) ** 2) / 0.16)).astype(np.float32)
-    bg += sheen[..., None] * 0.13
-    over(canvas, bg, sq)
+    # 1) 图标底盘 = 挂件的半透明暗底盘（截图里那层灰就是它压在浅色桌面上的样子，
+    #    这里把它还原成深色玻璃并给一层竖向渐变）。
+    #    同心圆角矩形只要「圆角差 = 外框差 / 2」就是一对平行等距曲线，于是底盘、
+    #    充电环内外缘、内环内外缘、CPU/RAM 的法向间距处处相等。
+    bg = vgrad(pal["plate"])
+    over(canvas, bg, rr_mask(x0, y0, x1, y1, TILE_CORNER))
 
-    # 2) 边缘高光：同样按平行等距内缩，拉出玻璃厚度
-    rim = np.clip(sq - rr_mask(b0 + 3, b0 + 3, b1 - 3, b1 - 3, bg_corner - 3), 0.0, 1.0)
-    over(canvas, color((255, 255, 255)), rim * vramp(0.22, 0.0))
+    # 2) 外层充电环底环（挂件的 white 0.28；<100% 时才是可见轨道，100% 会被进度弧盖满）
+    over(canvas, WHITE,
+         ring_band(x0, y0, x1, y1, TILE_CORNER, ring_w) * pal["track_outer"])
 
-    # 3) 环内的半透明暗底盘（挂件里的 black 0.32）
-    over(canvas, np.zeros(3, dtype=np.float32),
-         rr_mask(x0, y0, x1, y1, ring_corner) * 0.22)
-
-    # 4) 外层充电环底环（white 0.28；深色图标上稍提亮到 0.32 以增强轨道感）
-    over(canvas, color((255, 255, 255)),
-         ring_band(x0, y0, x1, y1, ring_corner, ring_w) * 0.32)
-
-    # 5) 内层 CPU / RAM 底环（white 0.15；提亮到 0.22，对照运行图的轨道层次）
-    ib0, ib1 = x0 + ring_w, x1 - ring_w
-    over(canvas, color((255, 255, 255)),
-         ring_band(ib0, ib0, ib1, ib1, charge_inner_r, inner_w) * 0.22)
-
-    # 6) 电量进度弧：trim(0, progress) + 自上而下 1.0 -> 0.75 的透明度渐变。
-    #    运行图里橙段底部约 0.66 亮度（非 0.55），过度渐变会让底部橙发灰、
-    #    左下角 CPU 蓝被吞没；故收窄渐变区间并减弱光晕。
+    # 3) 电量进度弧：trim(0, LEVEL)。100% 时整圈被覆盖，底环仅作为 <100% 时的轨道。
+    bar = color(level_color(LEVEL))
     path = rounded_rect_loop(x0 + ring_w / 2, y0 + ring_w / 2,
-                             x1 - ring_w / 2, y1 - ring_w / 2, ring_corner - ring_w)
-    arc = band_mask(sub_path(path, 0.0, BATTERY), ring_w)
-    bar = color(bar_color(BATTERY))
-    soft(canvas, arc, bar, 18.0, 0.10)
-    over(canvas, bar, arc * vramp(1.0, 0.75, y0, y1))
+                             x1 - ring_w / 2, y1 - ring_w / 2, TILE_CORNER - ring_w / 2)
+    arc = band_mask(sub_path(path, 0.0, LEVEL), ring_w)
+    soft(canvas, arc, bar, GLOW_RADIUS, GLOW_ALPHA)
+    over(canvas, bar, arc)
 
-    # 7) 内环：CPU 前半环反向生长、RAM 后半环正向生长，同基点 0.5
+    # 4) 内层 CPU / RAM 底环（挂件的 white 0.15；浅色底盘上同向提亮，否则看不见）
+    ib0, ib1 = x0 + ring_w, x1 - ring_w
+    over(canvas, WHITE,
+         ring_band(ib0, ib0, ib1, ib1, charge_inner_r, inner_w) * pal["track_inner"])
+
+    # 5) 内环：CPU 上半环自右边中点反向生长、RAM 下半环自同一点正向生长。
+    #    t = 0 在右边中点；上半环 = t 0.5→1.0（跨顶边到右边中点），
+    #    下半环 = t 0.0→0.5。故 CPU 取 1-0.5*cpu → 1、RAM 取 0 → 0.5*ram。
     ipath = rounded_rect_loop(x0 + inner_inset, y0 + inner_inset,
                               x1 - inner_inset, y1 - inner_inset,
-                              charge_inner_r - inner_w)
-    cpu = band_mask(sub_path(ipath, 0.5 - 0.5 * CPU, 0.5), inner_w)
-    ram = band_mask(sub_path(ipath, 0.5, 0.5 + 0.5 * RAM), inner_w)
+                              TILE_CORNER - inner_inset)
+    cpu = band_mask(sub_path(ipath, 1.0 - 0.5 * CPU, 1.0), inner_w)
+    ram = band_mask(sub_path(ipath, 0.0, 0.5 * RAM), inner_w)
     soft(canvas, cpu, color(CPU_BLUE), 12.0, 0.15)
     soft(canvas, ram, color(RAM_PURPLE), 12.0, 0.15)
     over(canvas, color(CPU_BLUE), cpu)
     over(canvas, color(RAM_PURPLE), ram)
 
-    # 8) 中间两行功率（1024 坐标布局，字体按 SS 放大后绘制）
+    # 6) 中间三行读数（按挂件的 VStack：行距 R_VGAP，基线 / 中线对齐方式照搬）
     cx = SIZE / 2.0
-    f_sys = font(R_SYS_F * RING_BOX)
-    f_sys_u = font(R_SYS_UNIT * RING_BOX)
-    f_chg = font(R_CHG_F * RING_BOX)
-    f_chg_u = font(R_CHG_UNIT * RING_BOX)
+    f_sys = font(latin, R_SYS_F * ICON_BOX)
+    f_sys_u = font(latin, R_SYS_UNIT * ICON_BOX)
+    f_chg = font(latin, R_CHG_F * ICON_BOX)
+    f_rem = font(latin, R_REM_F * ICON_BOX)
+    f_rem_cjk = font(cjk, R_REM_F * ICON_BOX)
 
     tw = lambda f, s: f.getlength(s) / SS
     lh = lambda f: sum(f.getmetrics()) / SS
     asc = lambda f: f.getmetrics()[0] / SS
 
-    bolt_sz = R_SYS_UNIT * RING_BOX
-    h1, h2 = lh(f_sys), lh(f_chg)
-    gap = R_VGAP * RING_BOX
-    top = cx - (h1 + gap + h2) / 2.0
-    base1 = top + asc(f_sys)
-    y2 = top + h1 + gap + h2 / 2.0
+    bolt_h = R_REM_F * ICON_BOX
+    bolt_w = bolt_h * BOLT_ASPECT
+    hg1 = R_HGAP1 * ICON_BOX
+    hg2 = R_HGAP2 * ICON_BOX
+    hg3 = R_HGAP3 * ICON_BOX
 
+    h1 = lh(f_sys)
+    h2 = max(lh(f_chg), bolt_h)
+    h3 = max(lh(f_rem), lh(f_rem_cjk))
+    gap = R_VGAP * ICON_BOX
+    top = (SIZE - (h1 + gap + h2 + gap + h3)) / 2.0
+
+    # 第一行：9.1 + W（同基线，第一行是整机的「主读数」）
+    base1 = top + asc(f_sys)
     w_num = tw(f_sys, SYS_W)
-    hg1 = R_HGAP1 * RING_BOX
-    w1 = w_num + hg1 + tw(f_sys_u, "W")
-    xs1 = cx - w1 / 2.0
-    over(canvas, color((255, 255, 255)), text_mask(SYS_W, f_sys, xs1, base1, "ls"))
-    over(canvas, color((255, 255, 255)),
+    w_1 = w_num + hg1 + tw(f_sys_u, "W")
+    xs1 = cx - w_1 / 2.0
+    over(canvas, INK, text_mask(SYS_W, f_sys, xs1, base1, "ls"))
+    over(canvas, INK,
          text_mask("W", f_sys_u, xs1 + w_num + hg1, base1, "ls") * 0.6)
 
-    w_chg = tw(f_chg, CHG_W)
-    hg2 = R_HGAP2 * RING_BOX
-    w2 = bolt_sz + hg2 + w_chg + hg2 + tw(f_chg_u, "W")
-    xs2 = cx - w2 / 2.0
-    pad = 0.05
-    bx, by = xs2 + pad * bolt_sz, y2 - bolt_sz / 2.0 + pad * bolt_sz
-    side = bolt_sz * (1 - 2 * pad)
-    bolt = [(bx + px * side, by + py * side) for (px, py) in BOLT]
+    # 第二行：闪电 + 时长（垂直居中）
+    y2 = top + h1 + gap + h2 / 2.0
+    w_chg = tw(f_chg, CHG_T)
+    w_2 = bolt_w + hg2 + w_chg
+    xs2 = cx - w_2 / 2.0
+    by = y2 - bolt_h / 2.0
+    bolt = [(xs2 + px * bolt_w, by + py * bolt_h) for (px, py) in BOLT]
     bm = poly_mask(bolt)
-    bcol = color(BOLT_ON if CHARGING else BOLT_OFF)
-    soft(canvas, bm, bcol, 16.0, 0.26)
-    over(canvas, bcol, bm)
+    # 闪电的柔光固定用白：深底上是高光、浅底上把字形从底盘里"托"出来
+    soft(canvas, bm, WHITE, 16.0, 0.20)
+    over(canvas, INK, bm * 0.5)
+    over(canvas, INK,
+         text_mask(CHG_T, f_chg, xs2 + bolt_w + hg2, y2, "lm") * 0.9)
 
-    tx = xs2 + bolt_sz + hg2
-    over(canvas, color((255, 255, 255)), text_mask(CHG_W, f_chg, tx, y2, "lm") * 0.9)
-    over(canvas, color((255, 255, 255)),
-         text_mask("W", f_chg_u, tx + w_chg + hg2, y2, "lm") * 0.5)
+    # 第三行：剩余 + 时长（与第二行同为「次要信息」，同为 white 0.6）
+    y3 = top + h1 + gap + h2 + gap + h3 / 2.0
+    w_lab = tw(f_rem_cjk, REM_LABEL)
+    w_3 = w_lab + hg3 + tw(f_rem, REM_T)
+    xs3 = cx - w_3 / 2.0
+    over(canvas, INK,
+         text_mask(REM_LABEL, f_rem_cjk, xs3, y3, "lm") * 0.6)
+    over(canvas, INK,
+         text_mask(REM_T, f_rem, xs3 + w_lab + hg3, y3, "lm") * 0.6)
 
     # ------------------------------------------------------------ 输出
     out = np.concatenate([np.clip(canvas[..., :3], 0.0, 1.0),
