@@ -20,14 +20,34 @@ public enum ChargeLimitWire {
 
     /// 下发给 helper 的动作。
     ///
+    /// 名字沿用 `inhibit` / `allow`（不改字符串是为了不破坏与已装 helper 的兼容），
+    /// 但**语义是机制中立的**：`inhibit` = 施加限制、`allow` = 解除限制。
+    /// 具体落到哪个键、写什么值，由 helper 按本机的 `Mechanism` 决定：
+    /// · 抑制机制 → `CH0B`/`CH0C` 写 `0x02` / `0x00`；
+    /// · 最大充电量机制 → `BCLM` 写 `指令里的 limit` / `100`。
+    ///
     /// 刻意只有两个取值：`/tmp` 是全局可写的，任何本地用户都能伪造指令文件。
     /// 把动作收敛成白名单枚举（配合 helper 侧的键/值白名单），最坏后果就被限制在
-    /// 「切换充电抑制」，不会变成任意 SMC 写入的提权面。
+    /// 「切换充电限制」，不会变成任意 SMC 写入的提权面。
     public enum Action: String, Codable {
-        /// 禁止充电（写抑制值）。
+        /// 施加限制。
         case inhibit
-        /// 允许充电（写允许值）。
+        /// 解除限制。
         case allow
+    }
+
+    /// 本机实际可用的充电限制机制。
+    ///
+    /// 两类机器走的是完全不同的硬件路径，判据也不同：
+    /// · `inhibit` —— 抑制充电的开关（`CH0B`/`CH0C`），写 `0x02`/`0x00`；
+    /// · `bclm`    —— 最大充电量（`BCLM`），写一个 0…100 的百分数。
+    /// 机型之间并不统一（本项目的真机 `MacBookAir8,1` 只有后者），
+    /// 所以机制由 helper 探测后上报，App 按它选决策方式 —— 而不是两边各自猜一套。
+    public enum Mechanism: String, Codable, Equatable {
+        /// 抑制充电的开关键。
+        case inhibit
+        /// 最大充电量键（取值是百分数）。
+        case bclm
     }
 
     /// App → helper 的指令。
@@ -92,7 +112,11 @@ public enum ChargeLimitWire {
         /// 「键存在但取值不认识」或「SMC 打不开」。用 `probed` / `error` 区分，
         /// 否则界面只能给出一句用户无法处理的提示。
         public var supported: Bool
-        /// helper 当前**实际**施加的状态（写完做了读回校验后才置位）。
+        /// helper 当前**实际**施加的状态（写完后做了读回校验才置位）。
+        ///
+        /// 机制中立的含义：**硬件当前是否已在限制充电**。
+        /// 抑制机制下 = 抑制键已是抑制值；最大充电量机制下 = `BCLM` < 100。
+        /// App 用它做两件事：喂给决策的「当前是否已限制」，以及在关闭功能时补一次解除。
         public var inhibited: Bool
         /// 实际用到的 SMC 键名（排查用；跳过/不认识的键不会出现在这里）。
         public var keys: [String]
@@ -104,6 +128,11 @@ public enum ChargeLimitWire {
         /// 候选键的只读探测结果（含可写白名单与额外候选）。
         /// 可选：旧版 helper 不写这个字段，`nil` 时 App 退回「键一个都没有」的判断。
         public var probed: [KeyProbe]?
+        /// 本机实际可用的限制机制。
+        ///
+        /// 可选：**旧版 helper 不写它**，`nil` 表示按 `inhibit` 机制理解 —— 那正是旧版
+        /// 唯一的机制，于是"App 升级了、helper 还没重装"仍按原行为工作，不会误报。
+        public var mechanism: Mechanism?
 
         public init(proto: Int,
                     supported: Bool,
@@ -111,7 +140,8 @@ public enum ChargeLimitWire {
                     keys: [String],
                     timestamp: Double,
                     error: String?,
-                    probed: [KeyProbe]? = nil) {
+                    probed: [KeyProbe]? = nil,
+                    mechanism: Mechanism? = nil) {
             self.proto = proto
             self.supported = supported
             self.inhibited = inhibited
@@ -119,6 +149,7 @@ public enum ChargeLimitWire {
             self.timestamp = timestamp
             self.error = error
             self.probed = probed
+            self.mechanism = mechanism
         }
 
         /// `error` 字段的取值（唯一定义处）。
@@ -136,6 +167,9 @@ public enum ChargeLimitWire {
             public static let verifyFailed = "verify_failed"
             /// 键存在但施加后没看到效果。
             public static let noEffect = "no_effect"
+            /// 指令里的上限值越界（只可能来自被伪造/损坏的指令文件）。
+            /// 拒绝执行，而不是"顺手改成合法值"。
+            public static let limitOutOfRange = "limit_out_of_range"
         }
     }
 

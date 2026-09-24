@@ -80,17 +80,17 @@ final class ChargeLimitTests: XCTestCase {
         for level in [80, 81, 99, 100] {
             XCTAssertEqual(ChargeLimitPolicy.action(level: level, limit: 80, enabled: true,
                                                     onExternalPower: true, currentlyInhibited: false),
-                           .inhibitCharging, "level=\(level)")
+                           .applyLimit, "level=\(level)")
         }
     }
 
     func testChargesWhenBelowLimitAndNotInhibited() {
         XCTAssertEqual(ChargeLimitPolicy.action(level: 79, limit: 80, enabled: true,
                                                 onExternalPower: true, currentlyInhibited: false),
-                       .allowCharging)
+                       .releaseLimit)
         XCTAssertEqual(ChargeLimitPolicy.action(level: 20, limit: 80, enabled: true,
                                                 onExternalPower: true, currentlyInhibited: false),
-                       .allowCharging)
+                       .releaseLimit)
     }
 
     /// 迟滞带的核心：已经抑制后，只有回落到 `上限 − 迟滞` 或更低才恢复充电。
@@ -101,39 +101,39 @@ final class ChargeLimitTests: XCTestCase {
         // 迟滞带内（79 / 76）→ 继续抑制，避免阈值附近反复启停。
         XCTAssertEqual(ChargeLimitPolicy.action(level: 79, limit: limit, enabled: true,
                                                 onExternalPower: true, currentlyInhibited: true),
-                       .inhibitCharging)
+                       .applyLimit)
         XCTAssertEqual(ChargeLimitPolicy.action(level: 76, limit: limit, enabled: true,
                                                 onExternalPower: true, currentlyInhibited: true),
-                       .inhibitCharging)
+                       .applyLimit)
         // 恰好落在边界（75 = limit − 迟滞）→ 恢复充电（判定用的是「严格高于」）。
         XCTAssertEqual(ChargeLimitPolicy.action(level: edge, limit: limit, enabled: true,
                                                 onExternalPower: true, currentlyInhibited: true),
-                       .allowCharging)
+                       .releaseLimit)
         // 明显回落 → 恢复充电。
         XCTAssertEqual(ChargeLimitPolicy.action(level: 60, limit: limit, enabled: true,
                                                 onExternalPower: true, currentlyInhibited: true),
-                       .allowCharging)
+                       .releaseLimit)
     }
 
     /// 迟滞只在「已经抑制」时才生效：没抑制过时低电量当然是允许充电。
     func testHysteresisOnlyAppliesWhenAlreadyInhibited() {
         XCTAssertEqual(ChargeLimitPolicy.action(level: 76, limit: 80, enabled: true,
                                                 onExternalPower: true, currentlyInhibited: false),
-                       .allowCharging)
+                       .releaseLimit)
     }
 
     /// 把上限从 80 调到 95、而当前电量 85 时应当恢复充电（85 ≤ 95 − 5，出了迟滞带）。
     func testRaisingLimitReleasesCharging() {
         XCTAssertEqual(ChargeLimitPolicy.action(level: 85, limit: 95, enabled: true,
                                                 onExternalPower: true, currentlyInhibited: true),
-                       .allowCharging)
+                       .releaseLimit)
     }
 
     /// 把上限从 100 调到 80、而当前电量 90 时应当立刻抑制（不需要经过迟滞带）。
     func testLoweringLimitInhibitsImmediately() {
         XCTAssertEqual(ChargeLimitPolicy.action(level: 90, limit: 80, enabled: true,
                                                 onExternalPower: true, currentlyInhibited: false),
-                       .inhibitCharging)
+                       .applyLimit)
     }
 
     func testIsAtLimit() {
@@ -308,6 +308,86 @@ final class ChargeLimitTests: XCTestCase {
     func testEnumeratedKeyLimitIsBounded() {
         XCTAssertGreaterThan(ChargeLimitWire.enumeratedKeyLimit, 0)
         XCTAssertLessThanOrEqual(ChargeLimitWire.enumeratedKeyLimit, 64)
+    }
+
+    // MARK: - 「最大充电量」机制（BCLM）
+
+    /// 与抑制机制**必须**分开决策：BCLM 是持久的上限值，按电量来回切会在电量回落时
+    /// 把上限整个撤掉（写回 100），电池就一路充回 100% 了。
+    func testLevelCapActionIgnoresBatteryLevel() {
+        // 只看"要不要限制"：启用且上限 < 100 → 施加。
+        XCTAssertEqual(ChargeLimitPolicy.levelCapAction(enabled: true, limit: 80), .applyLimit)
+        XCTAssertEqual(ChargeLimitPolicy.levelCapAction(enabled: true, limit: 50), .applyLimit)
+        XCTAssertEqual(ChargeLimitPolicy.levelCapAction(enabled: true, limit: 95), .applyLimit)
+        // 关闭 / 上限 100 → 解除（写回 100）。
+        XCTAssertEqual(ChargeLimitPolicy.levelCapAction(enabled: false, limit: 80), .releaseLimit)
+        XCTAssertEqual(ChargeLimitPolicy.levelCapAction(enabled: true, limit: 100), .releaseLimit)
+    }
+
+    /// 同一条指令下两套机制的结论可以不同 —— 这正是要分开的原因，钉住这个差异。
+    func testTwoMechanismsCanDisagreeOnTheSameInput() {
+        // 电量已回落到迟滞带以下、且此前已限制：
+        // 抑制机制 → 恢复充电；最大充电量机制 → 继续保持上限。
+        let inhibitDecision = ChargeLimitPolicy.action(level: 70, limit: 80, enabled: true,
+                                                       onExternalPower: true,
+                                                       currentlyInhibited: true)
+        XCTAssertEqual(inhibitDecision, .releaseLimit)
+        XCTAssertEqual(ChargeLimitPolicy.levelCapAction(enabled: true, limit: 80), .applyLimit)
+    }
+
+    /// helper 的最后一道护栏：指令文件来自全局可写的 `/tmp`，越界值宁可拒绝执行。
+    func testIsWritableRejectsOutOfRange() {
+        XCTAssertTrue(ChargeLimitPolicy.isWritable(50))
+        XCTAssertTrue(ChargeLimitPolicy.isWritable(80))
+        XCTAssertTrue(ChargeLimitPolicy.isWritable(100))
+        XCTAssertFalse(ChargeLimitPolicy.isWritable(49))
+        XCTAssertFalse(ChargeLimitPolicy.isWritable(101))
+        XCTAssertFalse(ChargeLimitPolicy.isWritable(0))
+        XCTAssertFalse(ChargeLimitPolicy.isWritable(-80))
+    }
+
+    // MARK: - 机制上报
+
+    func testMechanismRawValuesAreStable() throws {
+        // 跨进程契约：helper 按字面量读写，改掉即破坏性变更。
+        XCTAssertEqual(ChargeLimitWire.Mechanism.inhibit.rawValue, "inhibit")
+        XCTAssertEqual(ChargeLimitWire.Mechanism.bclm.rawValue, "bclm")
+        XCTAssertEqual(try JSONDecoder().decode(ChargeLimitWire.Mechanism.self,
+                                               from: Data("\"bclm\"".utf8)),
+                       .bclm)
+    }
+
+    /// 旧版 helper 的回执不带 `mechanism` → 必须解出 nil（App 据此按抑制机制理解），
+    /// 而不是解析失败 —— 否则"App 升级了、helper 还没重装"会被误判成协议不兼容。
+    func testStatusWithoutMechanismDecodesToNil() throws {
+        let json = """
+        {"proto":1,"supported":true,"inhibited":false,"keys":["CH0B"],"timestamp":1}
+        """
+        let status = try JSONDecoder().decode(ChargeLimitWire.Status.self, from: Data(json.utf8))
+        XCTAssertNil(status.mechanism)
+        XCTAssertNil(status.probed)
+    }
+
+    func testStatusWithMechanismRoundTrips() throws {
+        let status = ChargeLimitWire.Status(proto: ChargeLimitWire.version,
+                                            supported: true,
+                                            inhibited: true,
+                                            keys: ["BCLM"],
+                                            timestamp: 1_700_000_000,
+                                            error: nil,
+                                            probed: [ChargeLimitWire.KeyProbe(key: "BCLM",
+                                                                              present: true,
+                                                                              dataSize: 1,
+                                                                              value: 80,
+                                                                              used: true)],
+                                            mechanism: .bclm)
+        let data = try JSONEncoder().encode(status)
+        XCTAssertEqual(try JSONDecoder().decode(ChargeLimitWire.Status.self, from: data), status)
+    }
+
+    /// 越界错误码也是跨进程契约（App 侧不进文案分支，但会进日志）。
+    func testLimitOutOfRangeErrorCode() {
+        XCTAssertEqual(ChargeLimitWire.Status.ErrorCode.limitOutOfRange, "limit_out_of_range")
     }
 
     func testWirePathsAndWindows() {

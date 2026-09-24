@@ -152,9 +152,16 @@ const char *SMCChargeKey(int index) {
 unsigned char SMCChargeAllowValue(void) { return SMC_CHARGE_ALLOW_VALUE; }
 unsigned char SMCChargeInhibitValue(void) { return SMC_CHARGE_INHIBIT_VALUE; }
 
+// 「最大充电量」键。取值是百分数（0…100），不是开关值 —— 因此它**不**进 kSMCChargeKeys：
+// 那一组的判定是「值 ∈ {0x00, 0x02}」，套在 BCLM 上会把 0x00/0x02 误当成"允许/抑制"，
+// 而它们在这里只代表 0% / 2%。两套机制必须分开走各自的取值校验。
+const char *SMCChargeMaxLevelKey(void) { return "BCLM"; }
+
 // 额外「只读探测」候选键。这些名字在公开实现里作为充电控制键出现过，但语义未经确认，
 // 因此**只读不写**：它们只用来回答"这台机器有哪些相关键"，不参与任何执行判定。
 // 顺序即输出顺序（App 会把它们拼成一行诊断信息）。
+// ⚠️ BCLM 刻意**不在**这里：它已是可写的正式机制（见上面的 SMCChargeMaxLevelKey），
+// helper 会显式探测它，放在这里只会让同一个键报两遍。
 static const char *const kSMCChargeProbeKeys[] = {
     "CHTE",  // 部分新机型上的充电终止键
     "CH0I",  // AlDente 等实现提到过的一组
@@ -162,7 +169,6 @@ static const char *const kSMCChargeProbeKeys[] = {
     "CH0K",
     "ACEN",  // AC 使能类
     "CHWA",
-    "BCLM",  // Intel 上的"最大充电百分比"键（取值是百分比，语义与 CH0B 不同）
 };
 
 int SMCChargeProbeKeyCount(void) {

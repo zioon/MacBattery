@@ -130,7 +130,8 @@ while true {
                               inhibited: false,
                               keys: [],
                               error: ChargeLimitWire.Status.ErrorCode.smcOpenFailed,
-                              probed: nil)
+                              probed: nil,
+                              mechanism: nil)
         }
 
         writePower(watts)
@@ -173,20 +174,94 @@ func readFreshCommand(now: Double) -> ChargeLimitWire.Command? {
     return command
 }
 
-/// 把目标状态施加到硬件，返回「实际达成」的结果。
+/// 本机可用的限制机制及其当前状态（每轮重新探测）。
 ///
-/// 要点：
-/// · **当前值已是目标值时直接跳过写入** —— 这样从没启用过本功能的用户，
-///   一次 SMC 写都不会发生；
-/// · 写成功后必须**读回校验**：部分机型的固件会静默忽略写入，不看读回值就会向 App
-///   谎报"已抑制"，用户在界面上看到"已限充"而电池仍在充；
-/// · 只碰「当前取值已是已知两种之一」的键：读到别的值说明该键的语义与我们的理解不同
-///   （不同机型/固件对 CH0B、CH0C 的解释并不统一），跳过它，不猜、不乱写。
-func applyChargeState(_ conn: io_connect_t,
-                      inhibit: Bool) -> (inhibited: Bool, keys: [String], error: String?) {
+/// 两类机型走完全不同的硬件路径，别混：
+/// · `inhibit` —— 抑制充电的开关（`CH0B`/`CH0C`，`0x02`/`0x00`）；
+/// · `bclm`    —— 最大充电量（`BCLM`，写 0…100 的百分数）。
+/// 实测真机 `MacBookAir8,1`（2018 T2 Intel）只有后者。
+struct ChargeMechanismState {
+    var mechanism: ChargeLimitWire.Mechanism?
+    /// 抑制机制可用的键（存在、单字节、取值是已知的两种之一）。
+    var inhibitKeys: [String]
+    /// `BCLM` 当前取值（百分数）；nil = 不可用。
+    var maxLevel: Int?
+
+    var isAvailable: Bool { !inhibitKeys.isEmpty || maxLevel != nil }
+}
+
+/// 探测本机可用的限制机制。
+///
+/// 顺序是**先抑制键、后最大充电量**：抑制是已经发过版、在部分机型上验证过的路径，
+/// 不做无谓的改变；只有它不可用时才退到 BCLM。
+func detectMechanism(_ conn: io_connect_t) -> ChargeMechanismState {
     let allow = SMCChargeAllowValue()
     let suppress = SMCChargeInhibitValue()
-    let target = inhibit ? suppress : allow
+
+    var inhibitKeys: [String] = []
+    for i in 0..<SMCChargeKeyCount() {
+        guard let rawKey = SMCChargeKey(i) else { continue }
+        var current: UInt8 = 0
+        // 读失败 = 本机型没有这个键；取值不认识 = 语义与我们的理解不同（不同机型解释不统一），
+        // 两者都跳过该键 —— 不猜、不乱写。
+        guard SMCReadByte(conn, rawKey, &current) == 1 else { continue }
+        guard current == allow || current == suppress else { continue }
+        inhibitKeys.append(String(cString: rawKey))
+    }
+
+    let maxLevel = readMaxLevel(conn)
+    let mechanism: ChargeLimitWire.Mechanism? = !inhibitKeys.isEmpty
+        ? .inhibit
+        : (maxLevel != nil ? .bclm : nil)
+
+    return ChargeMechanismState(mechanism: mechanism,
+                                inhibitKeys: inhibitKeys,
+                                maxLevel: maxLevel)
+}
+
+/// 读 `BCLM` 并判断它能否安全使用。
+///
+/// 判据必须是**证据**而不是假设：键存在、`dataSize == 1`、且当前取值落在 0…100。
+/// 实测真机 `BCLM=0x64`（= 100）——正是"不限制"应有的默认值，与"取值是百分数"这一理解吻合。
+/// 取值不在这个范围说明它不是我们理解的百分数，那就判为不可用：不猜、不乱写。
+func readMaxLevel(_ conn: io_connect_t) -> Int? {
+    let rawKey = SMCChargeMaxLevelKey()
+    var size: UInt32 = 0
+    var value: Int32 = -1
+    guard SMCProbeKey(conn, rawKey, &size, &value) == 1 else { return nil }
+    guard size == 1, value >= 0, value <= Int32(ChargeLimitPolicy.maximumPercent) else { return nil }
+    return Int(value)
+}
+
+/// 把目标状态施加到硬件，返回「实际达成」的结果。
+///
+/// 按本机机制分派到两条完全不同的写入路径（见各自函数说明）。
+func applyChargeState(_ conn: io_connect_t,
+                      enforce: Bool,
+                      limit: Int,
+                      mechanism: ChargeMechanismState)
+    -> (applied: Bool, keys: [String], error: String?) {
+    if !mechanism.inhibitKeys.isEmpty {
+        return applyInhibit(conn, enforce: enforce)
+    }
+    if mechanism.maxLevel != nil {
+        return applyMaxLevel(conn, enforce: enforce, limit: limit)
+    }
+    // 两条路都不可用 → 功能无法执行（"为什么"由 probeChargeKeys 报回 App）。
+    return (false, [], ChargeLimitWire.Status.ErrorCode.noChargeKey)
+}
+
+/// 抑制机制（`CH0B`/`CH0C`）：开关式的"暂停充电 / 恢复充电"。
+///
+/// 要点：
+/// · **当前值已是目标值时直接跳过写入** —— 这样从没启用过本功能的用户，一次 SMC 写都不会发生；
+/// · 写成功后必须**读回校验**：部分机型的固件会静默忽略写入，不看读回值就会向 App
+///   谎报"已限制"，用户在界面上看到"已限充"而电池仍在充；
+/// · 只碰「当前取值已是已知两种之一」的键（见 `detectMechanism`）。
+func applyInhibit(_ conn: io_connect_t, enforce: Bool) -> (applied: Bool, keys: [String], error: String?) {
+    let allow = SMCChargeAllowValue()
+    let suppress = SMCChargeInhibitValue()
+    let target = enforce ? suppress : allow
 
     var usedKeys: [String] = []
     var verified = false
@@ -198,9 +273,7 @@ func applyChargeState(_ conn: io_connect_t,
         let key = String(cString: rawKey)
 
         var current: UInt8 = 0
-        // 读失败 = 本机型没有这个键，跳过。
         guard SMCReadByte(conn, rawKey, &current) == 1 else { continue }
-        // 取值不认识 = 语义与我们理解的不同（见函数说明），跳过。
         guard current == allow || current == suppress else { continue }
 
         usedKeys.append(key)
@@ -224,15 +297,79 @@ func applyChargeState(_ conn: io_connect_t,
     }
 
     if usedKeys.isEmpty {
-        // 一个可安全写入的键都没有 → 功能无法执行（"为什么"由 probeChargeKeys 报回 App）。
         return (false, [], ChargeLimitWire.Status.ErrorCode.noChargeKey)
     }
     guard verified else {
-        // 键在、但没写成功（或被固件挡回）→ 不能声称已抑制。
+        // 键在、但没写成功（或被固件挡回）→ 不能声称已限制。
         return (false, usedKeys, failure ?? ChargeLimitWire.Status.ErrorCode.noEffect)
     }
     // 部分键失败、部分成功时依然如实带上 error，供排查（App 界面只看 inhibited）。
-    return (inhibit, usedKeys, failure)
+    return (enforce, usedKeys, failure)
+}
+
+/// 最大充电量机制（`BCLM`）：写一个 0…100 的百分数，"最多充到多少"。
+///
+/// 与抑制机制的三个关键差别：
+/// · 解除 = 写回 `100`（而不是写开关值）；
+/// · **不看是否接电**：它是持久设置，拔插电源不需要改动；
+/// · 判据是"写完之后的值是否 < 100"，而不是"我们下发过什么" —— 硬件事实优先。
+func applyMaxLevel(_ conn: io_connect_t,
+                   enforce: Bool,
+                   limit: Int) -> (applied: Bool, keys: [String], error: String?) {
+    let rawKey = SMCChargeMaxLevelKey()
+    let key = String(cString: rawKey)
+    let target = enforce ? limit : ChargeLimitPolicy.maximumPercent
+
+    // 指令来自全局可写的 /tmp：越界值宁可拒绝执行，也不"顺手改成合法值"。
+    // 解除方向（100）恒在范围内，因此这条只在施加方向可能命中。
+    guard ChargeLimitPolicy.isWritable(target) else {
+        return (false, [key], ChargeLimitWire.Status.ErrorCode.limitOutOfRange)
+    }
+
+    guard let current = readMaxLevel(conn) else {
+        return (false, [], ChargeLimitWire.Status.ErrorCode.noChargeKey)
+    }
+    // 已是目标值 → 跳过写入（避免每秒一次无意义的 SMC 写）。
+    if current == target {
+        return (current < ChargeLimitPolicy.maximumPercent, [key], nil)
+    }
+
+    guard SMCWriteByte(conn, rawKey, UInt8(target)) == 1 else {
+        return (false, [key], ChargeLimitWire.Status.ErrorCode.writeFailed)
+    }
+
+    var readback: UInt8 = 0
+    guard SMCReadByte(conn, rawKey, &readback) == 1 else {
+        return (false, [key], ChargeLimitWire.Status.ErrorCode.verifyFailed)
+    }
+    let applied = Int(readback) < ChargeLimitPolicy.maximumPercent
+    // 读回值必须等于目标值：否则是"写进去了但不是我们写的值"，
+    // 状态照实报（`applied` 由读回值推得），并记下 verify 失败。
+    let error = Int(readback) == target ? nil : ChargeLimitWire.Status.ErrorCode.verifyFailed
+    return (applied, [key], error)
+}
+
+/// 每轮执行一次：读指令 → 施加 → 写回执。
+func updateChargeLimit(_ conn: io_connect_t) {
+    let now = Date().timeIntervalSince1970
+    // 没有新鲜指令（App 未运行 / 已退出 / 心跳中断）→ 目标为「解除限制」，即复位。
+    // 这条故障安全语义对两套机制都一样：宁可功能失效，也不留一个用户解不掉的哑火状态。
+    let command = readFreshCommand(now: now)
+    let enforce = command?.action == .inhibit
+    // 只有施加方向才需要 limit；解除方向一律用 100（`applyMaxLevel` 内部处理）。
+    // ⚠️ 这里**不调用 `clamp`**：clamp 会"顺手把越界值改成合法值"，那会让 `applyMaxLevel`
+    // 里那道 `isWritable` 护栏永远命中不了。指令来自全局可写的 /tmp，正确的处理是
+    // 拒绝执行（保持硬件现状），而不是替伪造者猜一个合法值。
+    let limit = command?.limit ?? ChargeLimitPolicy.defaultPercent
+
+    let mechanism = detectMechanism(conn)
+    let result = applyChargeState(conn, enforce: enforce, limit: limit, mechanism: mechanism)
+    writeChargeStatus(supported: mechanism.isAvailable,
+                      inhibited: result.applied,
+                      keys: result.keys,
+                      error: result.error,
+                      probed: probeChargeKeys(conn, usedKeys: result.keys),
+                      mechanism: mechanism.mechanism)
 }
 
 /// 只读探测全部候选键（含枚举出来的本机键名），供 App 回答「为什么显示不支持」。
@@ -260,11 +397,13 @@ func probeChargeKeys(_ conn: io_connect_t, usedKeys: [String]) -> [ChargeLimitWi
                                               used: usedKeys.contains(key)))
     }
 
-    // ① 可写白名单（执行判定只看这两个）→ ② 额外候选 → ③ 枚举出来的本机键名。
-    // 顺序有意义：前两组决定了下面的取值判定，枚举组纯粹是"这台机器还有什么"。
+    // ① 抑制机制的键 → ② 最大充电量键 → ③ 额外只读候选 → ④ 枚举出来的本机键名。
+    // 前三组的顺序有意义（前两组决定执行判定），枚举组纯粹是"这台机器还有什么"。
+    // 同名键由上面的 `seen` 去重：BCLM 既在机制组里、也会被枚举到。
     for i in 0..<SMCChargeKeyCount() {
         if let rawKey = SMCChargeKey(i) { probe(String(cString: rawKey)) }
     }
+    probe(String(cString: SMCChargeMaxLevelKey()))
     for i in 0..<SMCChargeProbeKeyCount() {
         if let rawKey = SMCChargeProbeKey(i) { probe(String(cString: rawKey)) }
     }
@@ -274,33 +413,22 @@ func probeChargeKeys(_ conn: io_connect_t, usedKeys: [String]) -> [ChargeLimitWi
     return probes
 }
 
-/// 每轮执行一次：读指令 → 施加 → 写回执。
-func updateChargeLimit(_ conn: io_connect_t) {
-    let now = Date().timeIntervalSince1970
-    // 没有新鲜指令（App 未运行 / 已退出 / 心跳中断）→ 目标为「允许充电」。
-    let targetInhibit = readFreshCommand(now: now)?.action == .inhibit
-    let result = applyChargeState(conn, inhibit: targetInhibit)
-    writeChargeStatus(supported: !result.keys.isEmpty,
-                      inhibited: result.inhibited,
-                      keys: result.keys,
-                      error: result.error,
-                      probed: probeChargeKeys(conn, usedKeys: result.keys))
-}
-
 // MARK: - 写入
 
 func writeChargeStatus(supported: Bool,
                        inhibited: Bool,
                        keys: [String],
                        error: String?,
-                       probed: [ChargeLimitWire.KeyProbe]?) {
+                       probed: [ChargeLimitWire.KeyProbe]?,
+                       mechanism: ChargeLimitWire.Mechanism?) {
     let status = ChargeLimitWire.Status(proto: ChargeLimitWire.version,
                                         supported: supported,
                                         inhibited: inhibited,
                                         keys: keys,
                                         timestamp: Date().timeIntervalSince1970,
                                         error: error,
-                                        probed: probed)
+                                        probed: probed,
+                                        mechanism: mechanism)
     guard let data = try? JSONEncoder().encode(status) else { return }
     writeAtomically(data, to: ChargeLimitWire.statusPath)
 }

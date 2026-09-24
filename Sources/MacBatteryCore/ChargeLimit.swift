@@ -38,12 +38,16 @@ public enum ChargeLimitPolicy {
     /// 取 5%，与系统「优化电池充电」的观感一致。
     public static let hysteresisPercent = 5
 
-    /// 期望动作。
+    /// 期望动作（机制中立）。
+    ///
+    /// 刻意不叫「禁止充电 / 允许充电」：本功能在两类机器上落到的硬件机制完全不同 ——
+    /// 一类是**抑制充电的开关**（`CH0B`/`CH0C`），另一类是**最大充电量**（`BCLM`）。
+    /// 后者语义上不是"开关"，而是"最多充到多少"，用「施加 / 解除上限」才能同时描述两者。
     public enum Action: Equatable {
-        /// 下发「禁止充电」。
-        case inhibitCharging
-        /// 下发「允许充电」。
-        case allowCharging
+        /// 施加充电上限。
+        case applyLimit
+        /// 解除充电上限（恢复为不限制）。
+        case releaseLimit
         /// 什么也不下发：本功能不该介入当前状况。
         case noChange
     }
@@ -66,9 +70,9 @@ public enum ChargeLimitPolicy {
     /// 1. 功能未启用，或上限为 100（= 不限制）→ `.noChange`，完全不干预；
     /// 2. 未接外电（电池供电）→ `.noChange`：断电时抑制充电没有意义，
     ///    也避免拔掉电源后还残留一条「禁止充电」的指令；
-    /// 3. 电量已达上限 → `.inhibitCharging`；
-    /// 4. 已在抑制中、且电量仍高于「上限 − 迟滞带」→ 维持 `.inhibitCharging`（迟滞，防抖动）；
-    /// 5. 其余（电量已回落到迟滞带以下）→ `.allowCharging`，恢复充电。
+    /// 3. 电量已达上限 → `.applyLimit`；
+    /// 4. 已在抑制中、且电量仍高于「上限 − 迟滞带」→ 维持 `.applyLimit`（迟滞，防抖动）；
+    /// 5. 其余（电量已回落到迟滞带以下）→ `.releaseLimit`，恢复充电。
     ///
     /// - Parameters:
     ///   - level: 当前电量（0...100）。
@@ -87,10 +91,36 @@ public enum ChargeLimitPolicy {
                               currentlyInhibited: Bool) -> Action {
         guard enabled, limit < maximumPercent else { return .noChange }
         guard onExternalPower else { return .noChange }
-        if level >= limit { return .inhibitCharging }
+        if level >= limit { return .applyLimit }
         // 迟滞带：只在「明显回落」后才恢复充电，避免在阈值上下反复启停。
-        if currentlyInhibited && level > limit - hysteresisPercent { return .inhibitCharging }
-        return .allowCharging
+        if currentlyInhibited && level > limit - hysteresisPercent { return .applyLimit }
+        return .releaseLimit
+    }
+
+    /// 「最大充电量」机制（`BCLM`）的决策。
+    ///
+    /// 与上面按电量判定的 `action(...)` **不能共用一套逻辑**：`BCLM` 设的是"最多充到多少"，
+    /// 由固件自己执行，因此不该按电量来回切换 —— 若在电量回落到迟滞带以下时把它恢复成 100，
+    /// 上限会被整个撤掉，电池一路充回 100%。这正是两种机制必须分开决策的原因。
+    ///
+    /// 判据只有"要不要限制"：
+    /// · 启用且上限 < 100 → 施加；
+    /// · 否则（关闭 / 上限 100）→ 解除（写回 100）。
+    ///
+    /// **不看是否接外电**：`BCLM` 是持久设置，未接电时也应保持用户设定的上限，
+    /// 且拔插电源不需要改动它。
+    public static func levelCapAction(enabled: Bool, limit: Int) -> Action {
+        guard enabled, limit < maximumPercent else { return .releaseLimit }
+        return .applyLimit
+    }
+
+    /// 该上限值是否可以写入硬件。
+    ///
+    /// 这是 helper 侧的**最后一道护栏**：指令文件来自全局可写的 `/tmp`，
+    /// 任何本地用户都能伪造。与 `clamp` 的区别是这个不做修正、只做裁决 ——
+    /// 不合法的值宁可拒绝执行，也不要"顺手帮你改成合法值"。
+    public static func isWritable(limit: Int) -> Bool {
+        limit >= minimumPercent && limit <= maximumPercent
     }
 
     /// 电量是否已达（或超过）上限。界面用它决定要不要显示「已限充」与上限刻度。

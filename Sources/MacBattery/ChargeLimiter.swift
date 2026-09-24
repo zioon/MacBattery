@@ -69,6 +69,11 @@ final class ChargeLimiter: ObservableObject {
     /// helper 能写出 `supported` / `keys` 就说明它成功打开了 SMC，
     /// 只有 `smc_open_failed` 表示连连接都没建立。
     @Published private(set) var smcReadable = false
+    /// 本机实际使用的限制机制（`nil` = 未知 / 旧版 helper，按抑制机制理解）。
+    ///
+    /// 由 helper 探测后上报，App 按它选决策方式 —— 两套机制的语义不同，
+    /// 各自猜一套必然错（抑制是开关、BCLM 是"最多充到多少"）。
+    @Published private(set) var mechanism: ChargeLimitWire.Mechanism?
 
     private static let logger = Logger(subsystem: "com.zioon.macbattery", category: "charge-limit")
 
@@ -79,8 +84,10 @@ final class ChargeLimiter: ObservableObject {
     private let queue = DispatchQueue(label: "MacBattery.chargeLimit", qos: .utility)
 
     /// 最近一条**已确认写出**的指令（nil = 从未发过）。
-    /// 用它做两道闸：只在指令变化时写盘、只对「抑制」做心跳保活。
+    /// 用它做三道闸：只在指令变化时写盘、上限值变了立刻重发、只对「施加」做心跳保活。
     private var lastSent: ChargeLimitWire.Action?
+    /// 最近一条指令里带的上限值（与 `lastSent` 配对）。
+    private var lastSentLimit: Int?
     private var lastWriteTime: Date?
     private var lastStatusRead: Date?
     private var statusReadInFlight = false
@@ -88,6 +95,11 @@ final class ChargeLimiter: ObservableObject {
     /// 最近一次「不可用」的补充说明（SMC 探测摘要），只用于日志。
     /// 让「开关点了没反应」这类问题在日志里就有答案，不必让用户去 /tmp 里翻 JSON。
     private var logUnavailableDetail: String?
+    /// 是否已经知道本机机制。
+    ///
+    /// 与 `mechanism == nil` 不是一回事：`nil` 可能是「旧版 helper（只有抑制机制）」，
+    /// 也可能是「还不知道」。前者可以照旧下发指令，后者不能 —— 见 `evaluate` 的下发护栏。
+    private var mechanismKnown = false
 
     init() {
         // 首次回执读取刻意**同步**完成：设置面板与挂件可能在第一帧就要显示状态，
@@ -115,27 +127,49 @@ final class ChargeLimiter: ObservableObject {
         readStatusIfDue(now: now)
         logEnableTransitionIfNeeded(wasEnabled: wasEnabled, enabled: enabled)
 
-        let action = ChargeLimitPolicy.action(level: level,
-                                              limit: clampedLimit,
-                                              enabled: enabled,
-                                              onExternalPower: !onBattery,
-                                              currentlyInhibited: hardwareInhibited)
-        switch action {
-        case .inhibitCharging:
-            send(.inhibit, limit: clampedLimit, now: now,
-                 heartbeat: ChargeLimitWire.heartbeatInterval)
-        case .allowCharging:
-            send(.allow, limit: clampedLimit, now: now, heartbeat: nil)
-        case .noChange:
-            // 关闭功能（或把上限改成 100%）时也要「放行一次」：否则上一条抑制指令会一直
-            // 留到新鲜度窗口过期（30s）才被 helper 复位，用户会觉得「关了还在限充」。
-            if (!enabled || clampedLimit >= ChargeLimitPolicy.maximumPercent), hardwareInhibited {
+        let action = decideAction(level: level,
+                                  onBattery: onBattery,
+                                  limit: clampedLimit,
+                                  enabled: enabled)
+        // 机制未知时一律不下发：抑制与 BCLM 的「解除」含义不同（写 `0x00` vs 写 `100`），
+        // 猜错方向的代价是**把用户设的上限整个撤掉**。等回执到了再动手，最多晚一个轮询周期。
+        if mechanismKnown {
+            switch action {
+            case .applyLimit:
+                send(.inhibit, limit: clampedLimit, now: now,
+                     heartbeat: ChargeLimitWire.heartbeatInterval)
+            case .releaseLimit:
                 send(.allow, limit: clampedLimit, now: now, heartbeat: nil)
+            case .noChange:
+                // `.noChange` 有多个来源（功能关闭 / 上限 100% / 未接外电）。只有前两者需要
+                // 「解除一次」；未接外电时不该动硬件 —— 与决策层 `action(...)` 的判断保持一致。
+                if (!enabled || clampedLimit >= ChargeLimitPolicy.maximumPercent), hardwareInhibited {
+                    send(.allow, limit: clampedLimit, now: now, heartbeat: nil)
+                }
             }
         }
 
         updatePhase(level: level, isCharging: isCharging,
                     onBattery: onBattery, limit: clampedLimit, enabled: enabled)
+    }
+
+    /// 按本机机制选决策方式。
+    ///
+    /// 这是两套机制**唯一**的接缝处，刻意做成一处显式分派而不是把它们揉进同一个判定：
+    /// 抑制机制是"到上限就停、回落到迟滞带以下再恢复"的开关逻辑；
+    /// 最大充电量（BCLM）是持久的上限值，按电量来回切会在电量回落时把上限整个撤掉。
+    private func decideAction(level: Int,
+                              onBattery: Bool,
+                              limit: Int,
+                              enabled: Bool) -> ChargeLimitPolicy.Action {
+        if mechanism == .bclm {
+            return ChargeLimitPolicy.levelCapAction(enabled: enabled, limit: limit)
+        }
+        return ChargeLimitPolicy.action(level: level,
+                                        limit: limit,
+                                        enabled: enabled,
+                                        onExternalPower: !onBattery,
+                                        currentlyInhibited: hardwareInhibited)
     }
 
     // MARK: - 状态推导
@@ -186,7 +220,8 @@ final class ChargeLimiter: ObservableObject {
                       limit: Int,
                       now: Date,
                       heartbeat: TimeInterval?) {
-        guard !writeInFlight, shouldSend(action, now: now, heartbeat: heartbeat) else { return }
+        guard !writeInFlight,
+              shouldSend(action, limit: limit, now: now, heartbeat: heartbeat) else { return }
 
         let command = ChargeLimitWire.Command(action: action,
                                               limit: limit,
@@ -202,17 +237,22 @@ final class ChargeLimiter: ObservableObject {
                 self.writeInFlight = false
                 guard written else { return }
                 self.lastSent = action
+                self.lastSentLimit = limit
                 self.lastWriteTime = now
             }
         }
     }
 
     private func shouldSend(_ action: ChargeLimitWire.Action,
+                            limit: Int,
                             now: Date,
                             heartbeat: TimeInterval?) -> Bool {
         guard lastSent == action else { return true }
-        // 目标与最近一条相同：只有「抑制」需要心跳保活。
-        // 「允许」是故障安全默认值（指令过期后 helper 自己会回到它），刷不刷都一样。
+        // 上限值变了也要立刻重发：对「最大充电量」机制来说 `limit` 就是**写进硬件的值**，
+        // 只靠心跳拖着，用户拖完滑块要等最多一个心跳周期才生效。
+        guard lastSentLimit == limit else { return true }
+        // 目标与最近一条相同：只有「施加」需要心跳保活。
+        // 「解除」是故障安全默认值（指令过期后 helper 自己会回到它），刷不刷都一样。
         guard action == .inhibit, let heartbeat else { return false }
         guard let last = lastWriteTime else { return true }
         return now.timeIntervalSince(last) >= heartbeat
@@ -245,6 +285,8 @@ final class ChargeLimiter: ObservableObject {
             // 读不到回执 = helper 没装 / 没在跑，此时「它能不能读 SMC」无从谈起。
             lastStatusAge = nil
             smcReadable = false
+            mechanismKnown = false
+            mechanism = nil
             setAvailability(.unavailable(reason: .notInstalled))
             inhibited = false
             probeSummary = nil
@@ -260,6 +302,8 @@ final class ChargeLimiter: ObservableObject {
         guard status.proto == ChargeLimitWire.version else {
             // 旧 helper 的字段不能按新语义解读，因此「SMC 可读」也不下结论。
             smcReadable = false
+            mechanismKnown = false
+            mechanism = nil
             setAvailability(.unavailable(reason: .outdatedHelper))
             inhibited = false
             probeSummary = nil
@@ -281,11 +325,17 @@ final class ChargeLimiter: ObservableObject {
             smcReadable = status.error != ChargeLimitWire.Status.ErrorCode.smcOpenFailed
             probeSummary = Self.summarize(status.probed)
             logUnavailableDetail = probeSummary
+            // 机制照样采纳："本机没有机制"与"还不知道机制"是两回事（见 evaluate 的下发护栏）。
+            mechanismKnown = true
+            mechanism = status.mechanism
             setAvailability(.unavailable(reason: ChargeLimitWire.unavailableReason(for: status)))
             inhibited = false
             return
         }
         smcReadable = true
+        // 旧版 helper 不带 mechanism 字段 → nil，按抑制机制理解（那是旧版唯一的机制）。
+        mechanismKnown = true
+        mechanism = status.mechanism
         setAvailability(.ready)
         inhibited = status.inhibited
         probeSummary = nil

@@ -84,6 +84,13 @@ const char *SMCChargeKey(int index);
 unsigned char SMCChargeAllowValue(void);
 unsigned char SMCChargeInhibitValue(void);
 
+// 「最大充电量」键的唯一定义处（`BCLM`，取值 = 0…100 的百分数）。
+//
+// 这是**另一套机制**，不是"开关"：它设的是"最多充到多少"，由固件自己执行，
+// 因此不需要按电量来回切换，也不需要非接电时才生效。
+// T2 / 2018+ 的 Intel 机型（如实测的 MacBookAir8,1）只有这一套，没有 CH0B/CH0C。
+const char *SMCChargeMaxLevelKey(void);
+
 // 只读探测（**永不写入**）：把键是否存在、dataSize、首字节取值带回去。
 // 返回 1 表示键存在（出参有效）；0 表示键不存在（出参被置为 0 / -1）。
 // 这是排查「本机不支持」的唯一手段 —— 用户机器上到底有没有这些键，只有这里能看出来。

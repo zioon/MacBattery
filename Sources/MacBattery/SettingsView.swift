@@ -170,14 +170,38 @@ struct SettingsView: View {
                     .textSelection(.enabled)
             }
 
-            Text(L("settings.charge_limit.hint.helper"))
-                .font(.caption2)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            // 「去装 helper」这条只在 helper 真的不可用时出现。
+            // 它已经在跑的时候还提示安装，会让人以为"装了也没用" —— 上一轮反馈的困惑
+            // 正是这么来的。那时该看的是上面那行 helper 状态与这行探测结果。
+            if showsHelperInstallHint {
+                Text(L("settings.charge_limit.hint.helper"))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Text(L("settings.charge_limit.hint.system"))
                 .font(.caption2)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    /// 是否需要提示「去安装 root helper」。
+    ///
+    /// 只在 helper **不可用**时为真：没安装 / 没在运行 / 版本过旧 / 读不到 SMC。
+    /// 而「本机没有可用键」「键在但取值不认识」这两种情况 helper 都在跑，
+    /// 提示安装只会把用户引到错误方向。
+    private var showsHelperInstallHint: Bool {
+        switch limiter.availability {
+        case .ready:
+            return false
+        case .unavailable(let reason):
+            switch reason {
+            case .notInstalled, .notRunning, .outdatedHelper, .smcUnreadable:
+                return true
+            case .unsupportedHardware, .unrecognizedValues:
+                return false
+            }
         }
     }
 
