@@ -155,9 +155,23 @@ jobs:
           # 拷贝应用图标到 bundle 并声明 CFBundleIconFile，否则 Finder/Dock 显示默认空白图标。
           if [ -f Resources/AppIcon.icns ]; then
             cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-            /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$APP/Contents/Info.plist" || true
-            echo "installed app icon"
+            echo "copied Resources/AppIcon.icns"
           fi
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile AppIcon" "$APP/Contents/Info.plist" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$APP/Contents/Info.plist"
+
+          # 门禁：图标必须真的进了 .app，且 Info.plist 指向它。
+          # 原先这段是 `cp … || true` 式的尽力而为：图标一旦没进去，构建阶段毫无反应，
+          # 只在用户装完之后表现为 Finder/Dock 里的默认空白图标 —— 属于"没人会立刻发现"的缺陷。
+          # 换图标（Resources/AppIcon.*）时必须保留这条门禁。
+          test -s "$APP/Contents/Resources/AppIcon.icns" || {
+            echo "::error::.app 内缺少 AppIcon.icns（Finder/Dock 会显示默认空白图标）"; exit 1;
+          }
+          ICON_KEY="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist" 2>/dev/null || true)"
+          test "$ICON_KEY" = "AppIcon" || {
+            echo "::error::Info.plist 的 CFBundleIconFile 是 '$ICON_KEY'，应为 AppIcon"; exit 1;
+          }
+          echo "OK: app icon installed ($ICON_KEY)"
 
           # 用解析出的版本号覆盖 Info.plist，保证应用内自动更新能正确比对版本。
           # 无条件覆盖：workflow_dispatch 时 GITHUB_REF_NAME 是分支名（没有 v 前缀），
