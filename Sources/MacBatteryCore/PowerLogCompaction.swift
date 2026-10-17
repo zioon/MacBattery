@@ -234,9 +234,12 @@ public enum PowerLogEncoding {
     public static func parseV1(_ line: Substring) -> PowerSampleRecord? {
         let parts = line.split(separator: ",", omittingEmptySubsequences: false)
         guard parts.count >= 9,
-              let epochString = parts[0].split(separator: ".").first,
-              let epochSeconds = Double(epochString), epochSeconds >= 946_684_800
+              let epochSeconds = Double(parts[0]), epochSeconds >= 946_684_800
         else { return nil }
+        // ⚠️ 时间戳必须**整段**解析，不能只取小数点前的整数部分：
+        // v1 写的是 0.5s 间隔的带小数 epoch，下取整到整秒会让同一秒内的两条样本
+        // 拿到相同时间戳，回填去重时又丢一半历史（0.5s 采样 → 每秒丢 1 条）。
+        // 旧实现（`split(".").first`）正是这个错误，2026-10-17 由新单测抓出。
         return PowerSampleRecord(t: Date(timeIntervalSince1970: epochSeconds),
                                  batteryPercent: Int(parts[1]) ?? 0,
                                  isCharging: (parts[2] == "1"),

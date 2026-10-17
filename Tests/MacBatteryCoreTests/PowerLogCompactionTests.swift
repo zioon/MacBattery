@@ -205,7 +205,22 @@ final class PowerLogCompactionTests: XCTestCase {
         XCTAssertEqual(r.chargingMilliWatts, 12345)
         XCTAssertEqual(r.cpuPercent, 43)
         XCTAssertEqual(r.systemMilliWatts, 8765)
+        // ⚠️ 时间戳必须保留小数部分：截断到整秒会让同一秒内的两条 v1 样本
+        // 拿到相同时间戳，回填去重时丢掉一半历史（0.5s 采样 → 每秒丢 1 条）。
         XCTAssertEqual(r.timestamp.timeIntervalSince1970, 1_758_000_000.5, accuracy: 0.001)
+    }
+
+    /// 同一秒内两条 v1 记录（0.5s 采样）解析后时间戳必须互不相同，
+    /// 否则回填时会被 `mergedByTimestamp` 当成重复项去掉。
+    func testParseV1KeepsSubSecondResolution() {
+        let a = "1758000000.000000,85,0,0,0,0,0.4,0.8,8.0"
+        let b = "1758000000.500000,85,0,0,0,0,0.4,0.8,8.0"
+        guard let ra = PowerLogEncoding.parseV1(Substring(a)),
+              let rb = PowerLogEncoding.parseV1(Substring(b)) else {
+            return XCTFail("两行都应解析成功")
+        }
+        XCTAssertNotEqual(ra.epochMilliseconds, rb.epochMilliseconds,
+                          "相差 0.5s 的两条 v1 记录必须得到不同时间戳")
     }
 
     func testParseRejectsHeaderAndInvalidEpoch() {

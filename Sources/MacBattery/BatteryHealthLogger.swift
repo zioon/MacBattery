@@ -391,9 +391,10 @@ private final class BatteryHealthLogStore {
     private func parseCSVLine(_ line: Substring) -> BatteryHealthSample? {
         let parts = line.split(separator: ",", omittingEmptySubsequences: false)
         // 兼容旧 6 列文件（含已废弃的 levelPercent 列）：多余的第 6 列直接忽略。
+        // 时间戳整段解析（不截断小数部分）：截断到整秒会让同一秒内的两条样本撞上相同
+        // 时间戳，回填去重时丢数据。当前 60s 采样间隔下不撞车，但这是同一处逻辑错误。
         guard parts.count >= 5,
-              let epochString = parts[0].split(separator: ".").first,
-              let epoch = Double(epochString) else { return nil }
+              let epoch = Double(parts[0]) else { return nil }
         // 过滤表头 / 明显早于 2000 年的无效行。
         if epoch < 946684800 {
             return nil
