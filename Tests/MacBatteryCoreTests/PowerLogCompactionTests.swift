@@ -93,7 +93,7 @@ final class PowerLogCompactionTests: XCTestCase {
     func testIdenticalValueWithinToleranceIsDropped() {
         let prev = record(offsetSeconds: 0)
         // 系统功率抖动 1.9W < 2W 容差，CPU 抖动 1 < 2 个百分点。
-        let next = record(offsetSeconds: 0.5, systemMilliWatts: 9900, cpu: 11)
+        let next = record(offsetSeconds: 0.5, cpu: 11, systemMilliWatts: 9900)
         XCTAssertFalse(PowerLogGate.default.shouldPersist(previous: prev, current: next))
     }
 
