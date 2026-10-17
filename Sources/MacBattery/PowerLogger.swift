@@ -18,7 +18,33 @@ struct PowerSample {
     var memoryUsage: Double       // 0...1
     var systemWatts: Double
 
-    /// 定点化后的落盘形态。
+    /// 成员逐一构造。
+    ///
+    /// ⚠️ **必须显式写出**：Swift 只在「没有自定义 init」时自动合成 memberwise init。
+    /// 下面新增了 `init(record:)` 之后，编译器就不再合成它，
+    /// 于是 `PowerMonitor.performSampling` 里的 `PowerSample(t:…)` 全部编译失败
+    /// （2026-10-17 由 CI 的 `swift test` 抓到，本机无 Swift 工具链看不见）。
+    init(t: Date,
+         batteryPercent: Int,
+         isCharging: Bool,
+         chargingWatts: Double,
+         chargingVoltage: Double,
+         chargingCurrent: Double,
+         cpuUsage: Double,
+         memoryUsage: Double,
+         systemWatts: Double) {
+        self.t = t
+        self.batteryPercent = batteryPercent
+        self.isCharging = isCharging
+        self.chargingWatts = chargingWatts
+        self.chargingVoltage = chargingVoltage
+        self.chargingCurrent = chargingCurrent
+        self.cpuUsage = cpuUsage
+        self.memoryUsage = memoryUsage
+        self.systemWatts = systemWatts
+    }
+
+    /// 由落盘的定点记录还原（全精度）。
     init(record: PowerSampleRecord) {
         t = record.timestamp
         batteryPercent = record.batteryPercent
