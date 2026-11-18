@@ -22,6 +22,14 @@ struct PowerSample {
     var cpuUsage: Double          // 0...1
     var memoryUsage: Double       // 0...1
     var systemWatts: Double
+    /// 电池温度（℃）。nil = 未知（旧磁盘数据 / 机型未提供）。
+    var temperatureCelsius: Double?
+    /// 剩余时间估算（分钟）：-1 估算中，-2 接通电源，其余为分钟。nil = 未知。
+    var remainingMinutes: Int?
+    /// 当前电量（mAh）。nil = 未知。
+    var currentCapacity: Int?
+    /// 是否已充满。nil = 未知（旧磁盘数据没有该列）。
+    var fullyCharged: Bool?
 
     /// 成员逐一构造。
     ///
@@ -38,7 +46,11 @@ struct PowerSample {
          chargingCurrent: Double,
          cpuUsage: Double,
          memoryUsage: Double,
-         systemWatts: Double) {
+         systemWatts: Double,
+         temperatureCelsius: Double? = nil,
+         remainingMinutes: Int? = nil,
+         currentCapacity: Int? = nil,
+         fullyCharged: Bool? = nil) {
         self.t = t
         self.batteryPercent = batteryPercent
         self.isCharging = isCharging
@@ -49,6 +61,10 @@ struct PowerSample {
         self.cpuUsage = cpuUsage
         self.memoryUsage = memoryUsage
         self.systemWatts = systemWatts
+        self.temperatureCelsius = temperatureCelsius
+        self.remainingMinutes = remainingMinutes
+        self.currentCapacity = currentCapacity
+        self.fullyCharged = fullyCharged
     }
 
     /// 由落盘的定点记录还原（全精度）。
@@ -63,6 +79,10 @@ struct PowerSample {
         cpuUsage = Double(record.cpuPercent) / 100
         memoryUsage = Double(record.memoryPercent) / 100
         systemWatts = Double(record.systemMilliWatts) / 1000
+        temperatureCelsius = record.temperatureDeciCelsius.map { Double($0) / 10 }
+        remainingMinutes = record.remainingMinutes
+        currentCapacity = record.currentCapacityMilliAmpHours
+        fullyCharged = record.fullyCharged
     }
 
     /// 定点化后的落盘形态。
@@ -76,7 +96,11 @@ struct PowerSample {
                           cpuUsage: cpuUsage,
                           memoryUsage: memoryUsage,
                           systemWatts: systemWatts,
-                          externalPower: externalPower)
+                          externalPower: externalPower,
+                          temperatureCelsius: temperatureCelsius,
+                          remainingMinutes: remainingMinutes,
+                          currentCapacity: currentCapacity,
+                          fullyCharged: fullyCharged)
     }
 }
 
@@ -102,8 +126,27 @@ final class PowerLogger: ObservableObject {
     /// 而 v1 时代同样 40000 点只覆盖不到 30 分钟。
     static let historyBackfill = 40_000
 
+    /// 「向更早回溯」时每次从磁盘补载的样本条数。
+    ///
+    /// 只是单页大小：视图把左缘拖过已加载的最早样本后会再请求下一页，
+    /// 因此可以一直回溯到文件里最早的数据。
+    static let historyPage = 20_000
+
+    /// 按需回溯历史时，在 `memoryCapacity` 之外额外允许保留的样本数上限。
+    /// 超出后由 `append` 从最旧端裁剪（与原有容量策略一致），避免内存无限增长。
+    static let maxLoadedHistory = 300_000
+
     /// 按时间升序的样本缓冲（主线程访问）。
     @Published private(set) var samples: [PowerSample] = []
+
+    /// 是否已经回溯到磁盘文件里最早的数据。到达后视图不再请求更早历史。
+    @Published private(set) var reachedHistoryStart = false
+
+    /// 已按需回溯载入的额外容量（只增不减，重置时清零）。
+    private var loadedHistoryBudget = 0
+
+    /// 是否有一次「更早历史」读取正在进行（防重入：拖动时每帧都会尝试触发）。
+    private var isLoadingOlder = false
 
     /// 磁盘读写（所有 IO 方法均非隔离，可安全在后台调用）。
     private nonisolated let store = PowerLogStore()
@@ -147,10 +190,12 @@ final class PowerLogger: ObservableObject {
     /// 但只有通过 `gate.shouldPersist` 的才进 `pending` 落盘。
     /// 稳态下 0.5s 一采绝大多数是重复值，因此实际写入率降到 1/60s。
     func append(_ f: PowerSample) {
-        if samples.count + 1 > Self.memoryCapacity {
+        // 回溯载入的更早历史额外占用容量：否则刚补回来的一页会被下一条采样整体裁掉。
+        let limit = Self.memoryCapacity + loadedHistoryBudget
+        if samples.count + 1 > limit {
             // 缓冲已满才裁剪（约每容量次触发一次，命中率很低）。
             objectWillChange.send()
-            samples.removeFirst(samples.count + 1 - Self.memoryCapacity)
+            samples.removeFirst(samples.count + 1 - limit)
         }
         objectWillChange.send()
         samples.append(f)
@@ -191,9 +236,43 @@ final class PowerLogger: ObservableObject {
         }
     }
 
+    /// 从磁盘再补载一页比当前内存最早样本更早的历史（按需回溯）。
+    ///
+    /// 由图表在视窗左缘被拖过已加载边界时调用；每次只读一页，读完后由视图根据
+    /// 新的左缘决定是否继续请求。磁盘读取在 `PowerLogStore` 的 IO 队列上执行。
+    func loadOlderHistory() {
+        guard !isLoadingOlder, !reachedHistoryStart, let earliest = samples.first?.t else { return }
+        isLoadingOlder = true
+        let gen = generation
+        store.readOlder(before: earliest, limit: Self.historyPage) { [weak self] page in
+            Task { @MainActor [weak self] in
+                guard let self, self.generation == gen else { return }
+                self.isLoadingOlder = false
+                guard !page.samples.isEmpty else {
+                    // 没有更早的数据了（已到文件头 / 读取预算耗尽）。标记后不再请求，
+                    // 否则拖动到边界时会持续空读磁盘。
+                    self.reachedHistoryStart = true
+                    return
+                }
+                // 页内记录都严格早于 samples.first，直接前插即为有序，
+                // 不必整体重排（样本量可能很大）；读取期间新追加的采样仍在尾部。
+                var merged = page.samples
+                merged.append(contentsOf: self.samples)
+                self.samples = merged
+                // 让 append 的容量裁剪额外保留这部分历史（有上限，避免内存无限增长）。
+                self.loadedHistoryBudget = min(Self.maxLoadedHistory,
+                                               self.loadedHistoryBudget + page.samples.count)
+                self.reachedHistoryStart = page.reachedStart
+            }
+        }
+    }
+
     /// 重置：清空内存缓冲与磁盘 CSV，历史从零开始（不可恢复）。
     func reset() {
         generation += 1
+        isLoadingOlder = false
+        reachedHistoryStart = false
+        loadedHistoryBudget = 0
         if !samples.isEmpty { objectWillChange.send() }
         samples.removeAll()
         pending.removeAll()
@@ -273,6 +352,23 @@ private final class PowerLogStore {
         }
     }
 
+    /// 一页「更早历史」的读取结果。
+    struct OlderPage {
+        /// 时间早于请求边界、升序排列的样本（可能为空：没有更早数据了）。
+        let samples: [PowerSample]
+        /// 两个文件都已倒读到开头（即文件里没有更早的数据了）。
+        let reachedStart: Bool
+    }
+
+    /// 读取一页早于 `before` 的历史记录（供图表向更早时段按需分页）。
+    func readOlder(before: Date, limit: Int, completion: @escaping (OlderPage) -> Void) {
+        let beforeMs = Int(before.timeIntervalSince1970 * 1000)
+        ioQueue.async { [self] in
+            let page = self.readOlderHistory(beforeMs: beforeMs, limit: limit)
+            DispatchQueue.main.async { completion(page) }
+        }
+    }
+
     // MARK: 写
 
     private func writeSamples(_ batch: [PowerSampleRecord]) {
@@ -328,8 +424,8 @@ private final class PowerLogStore {
         // 字节预算在两个文件间分摊，各占一半：单个文件仍保留分块倒读的短路能力，
         // 又不会让庞大的 v1 遗留文件把 v2 的读取额度吃光。
         let perFileLimit = max(1, limit / 2)
-        let v2 = readTail(fileURL: fileURL, limit: perFileLimit, parse: PowerLogEncoding.parseV2)
-        let v1 = readTail(fileURL: legacyFileURL, limit: perFileLimit, parse: PowerLogEncoding.parseV1)
+        let v2 = readTail(fileURL: fileURL, limit: perFileLimit, parse: PowerLogEncoding.parseV2).records
+        let v1 = readTail(fileURL: legacyFileURL, limit: perFileLimit, parse: PowerLogEncoding.parseV1).records
 
         // 同一时刻可能同时存在于 v1 与 v2（升级边界附近），按时间戳去重：
         // 时间戳相同时 v2 覆盖 v1（定点精度已收敛，且它是同一事实的最终形态）。
@@ -343,15 +439,44 @@ private final class PowerLogStore {
             .map { PowerSample(record: $0) }
     }
 
+    /// 读取一页早于 `beforeMs` 的历史（升序），并报告是否已读完两个文件。
+    ///
+    /// 与 `readRecentHistory` 同样的双文件分摊与按时间戳去重；区别只在于
+    /// 倒读时跳过不早于 `beforeMs` 的行，并且 `reachedStart` 必须两个文件都成立。
+    private func readOlderHistory(beforeMs: Int, limit: Int) -> OlderPage {
+        let perFileLimit = max(1, limit / 2)
+        let v2 = readTail(fileURL: fileURL, limit: perFileLimit, beforeMs: beforeMs,
+                          parse: PowerLogEncoding.parseV2)
+        let v1 = readTail(fileURL: legacyFileURL, limit: perFileLimit, beforeMs: beforeMs,
+                          parse: PowerLogEncoding.parseV1)
+
+        var byTime: [Int: PowerSampleRecord] = [:]
+        for r in v1.records { byTime[r.epochMilliseconds] = r }
+        for r in v2.records { byTime[r.epochMilliseconds] = r }
+
+        let samples = byTime.values
+            .sorted { $0.epochMilliseconds < $1.epochMilliseconds }
+            .suffix(limit)
+            .map { PowerSample(record: $0) }
+        return OlderPage(samples: samples, reachedStart: v1.reachedStart && v2.reachedStart)
+    }
+
     /// 从单个 CSV 尾部倒序读取若干完整行并解析（升序）。
     ///
     /// - Parameters:
+    ///   - beforeMs: 只收集时间戳**严格早于**该毫秒值的行（nil = 不限制）。
+    ///     用于「向更早分页」：从文件尾往前扫，跳过已加载的较新部分。
     ///   - parse: 行解析器（v1 / v2 各一个）。返回 nil 的行（残行、表头、格式不符）被跳过。
+    /// - Returns: 解析出的记录（升序）以及是否已倒读到文件开头。
     private func readTail(fileURL: URL,
                          limit: Int,
-                         parse: (Substring) -> PowerSampleRecord?) -> [PowerSampleRecord] {
+                         beforeMs: Int? = nil,
+                         parse: (Substring) -> PowerSampleRecord?) -> (records: [PowerSampleRecord], reachedStart: Bool) {
         guard let attr = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
-              let size = (attr[.size] as? NSNumber)?.intValue, size > 0 else { return [] }
+              let size = (attr[.size] as? NSNumber)?.intValue, size > 0 else {
+            // 文件不存在 / 为空：这个文件里没有可读的历史。
+            return ([], true)
+        }
 
         var result: [PowerSampleRecord] = []
         let chunk = 1 << 20
@@ -404,6 +529,8 @@ private final class PowerLogStore {
             }
             for line in lines.reversed() {
                 if let s = parse(line) {
+                    // 向更早分页时跳过已加载区间（行按时间升序追加，越往前越旧）。
+                    if let beforeMs, s.epochMilliseconds >= beforeMs { continue }
                     result.append(s)
                     if result.count >= limit { break }
                 }
@@ -415,6 +542,9 @@ private final class PowerLogStore {
         } else if readSoFar >= 48 << 20 && offset > 0 {
             Self.logger.warning("历史文件过大（超过 48MB），回填被截断: \(fileURL.lastPathComponent, privacy: .public) 剩余 \(offset, privacy: .public) 字节未读")
         }
-        return result.sorted { $0.epochMilliseconds < $1.epochMilliseconds }
+        // 只有「整份读完且未因条数上限提前停下」才算到达文件头：
+        // 停在条数上限时当前块里可能还有更早的行未解析，下一次分页仍需继续。
+        let reachedStart = offset == 0 && result.count < limit && !readFailed
+        return (result.sorted { $0.epochMilliseconds < $1.epochMilliseconds }, reachedStart)
     }
 }

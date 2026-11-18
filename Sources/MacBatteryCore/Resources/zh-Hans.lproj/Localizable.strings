@@ -28,6 +28,7 @@
 "menu.settings" = "设置…";
 "menu.history_chart" = "历史图表…";
 "menu.battery_health" = "电池健康…";
+"menu.battery_analysis" = "电池分析…";
 "menu.widget" = "显示挂件";
 "menu.passthrough" = "鼠标穿透";
 "menu.charge_limit" = "充电上限（%d%%）";
@@ -38,6 +39,7 @@
 "window.settings" = "MacBattery 设置";
 "window.history_chart" = "MacBattery 历史图表";
 "window.battery_health" = "MacBattery 电池健康";
+"window.battery_analysis" = "MacBattery 电池分析";
 
 /* 设置窗口 */
 "settings.language" = "语言";
@@ -53,6 +55,7 @@
 "settings.version.current" = "当前版本 %@";
 "settings.check_update" = "检查更新";
 "settings.update.auto_hint" = "启动时会自动检查，发现新版本将自动下载 DMG 到「下载」文件夹。";
+"settings.open_logs" = "打开日志文件夹";
 "settings.done" = "完成";
 
 /* 充电上限 */
@@ -122,6 +125,35 @@
 "health.empty_placeholder" = "暂无健康数据（应用运行后会随采样累积）";
 "alert.reset_health.title" = "重置健康数据";
 "alert.reset_health.message" = "将清空电池健康日志的全部历史数据（含磁盘 CSV），且不可恢复。确定重置？";
+
+/* 电池数据分析面板 */
+"analysis.temperature" = "温度";
+"analysis.temperature.value" = "%@ ℃";
+"analysis.remaining" = "剩余时间";
+"analysis.remaining.on_ac" = "接通电源";
+"analysis.remaining.estimating" = "估算中…";
+"analysis.capacity" = "当前容量";
+"analysis.capacity.value" = "%d mAh · %d%%";
+"analysis.health" = "健康度";
+"analysis.cycles" = "循环次数";
+"analysis.voltage" = "电压";
+"analysis.voltage.value" = "%@ V";
+"analysis.current" = "电流";
+"analysis.current.value" = "%@ A";
+"analysis.power_state" = "电源状态";
+"analysis.state.charging" = "充电中";
+"analysis.state.full" = "已充满";
+"analysis.state.plugged" = "已接电源";
+"analysis.state.battery" = "电池供电";
+"analysis.state.unknown" = "状态未知";
+"analysis.axis_hint" = "左上：℃  ·  右上：mAh  ·  下：分钟";
+"analysis.unit.celsius" = "℃";
+"analysis.unit.minutes" = "min";
+"analysis.window.1h" = "1h";
+"analysis.window.6h" = "6h";
+"analysis.window.24h" = "24h";
+"analysis.window.7d" = "7d";
+"analysis.empty_placeholder" = "暂无电池数据（应用运行后会随采样累积）";
 
 /* 挂件 HUD */
 "hud.unit.watts" = "W";

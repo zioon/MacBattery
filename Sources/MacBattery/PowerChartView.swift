@@ -40,6 +40,9 @@ struct PowerChartView: View {
     /// 「适合窗口」会恢复。跟随期间右缘始终贴住最新样本。
     @State private var followLive = true
 
+    /// 视窗左缘已越过内存里的最早样本：等待更早历史补入后继续补载（分页的续读信号）。
+    @State private var awaitingOlderHistory = false
+
     /// 拖拽基准（手势开始时记录，保证平移严格跟手、不累积偏差）。
     @GestureState private var dragBase: DragBase?
 
@@ -121,6 +124,14 @@ struct PowerChartView: View {
         }
         .onAppear { refreshRightAxis() }
         .onChange(of: valueSeriesMask) { _ in refreshRightAxis() }
+        // 更早历史补载完成（内存最早样本前移）：若视窗左缘仍超出，继续补下一页。
+        .onChange(of: logger.samples.first?.t) { _ in
+            if awaitingOlderHistory { maybeLoadOlderHistory() }
+        }
+        // 已回溯到文件头：把越界的时间右缘收回，避免停在无数据的空白区。
+        .onChange(of: logger.reachedHistoryStart) { _ in
+            endTime = clampEnd(endTime)
+        }
     }
 
     // MARK: - 图例
@@ -396,6 +407,7 @@ struct PowerChartView: View {
         if let delta = ChartInteraction.panSeconds(dx: tr.width, plotWidth: plot.plotW, timeRange: timeRange) {
             endTime = clampEnd(base.endTime - delta)
         }
+        maybeLoadOlderHistory()
         refreshRightAxis()
     }
 
@@ -419,6 +431,8 @@ struct PowerChartView: View {
             // 纵向滚动 → 缩放时间窗口：右缘锚定（实时模式下保持贴最新），钳制单次缩放。
             zoomTime(by: ChartInteraction.timeZoomFactor(dy: dy))
         }
+        // 平移 / 缩小时间窗都可能把左缘推到已加载边界之前 → 按需补载更早历史。
+        maybeLoadOlderHistory()
         refreshRightAxis()
     }
 
@@ -437,9 +451,30 @@ struct PowerChartView: View {
         rightMin = a; rightMax = b
     }
 
-    /// 时间右缘上限（不越过当前时间 + 12s 采样余量），下限不早于最早样本。
+    /// 时间右缘：上限不越过当前时间 + 12s 采样余量。
+    ///
+    /// 下限：**已回溯到文件头**时停在最早样本 + 20s；尚未到达文件头时允许再把
+    /// 视窗左缘往更早推最多一个窗口，用于触发更早历史的按需补载 ——
+    /// 否则拖动到已加载边界就停住，无法继续回看。
     private func clampEnd(_ d: Date) -> Date {
-        ChartInteraction.clampedEnd(d, now: Date(), earliest: logger.samples.first?.t)
+        let now = Date()
+        guard !logger.reachedHistoryStart, let earliest = logger.samples.first?.t else {
+            return ChartInteraction.clampedEnd(d, now: now, earliest: logger.samples.first?.t)
+        }
+        let capped = ChartInteraction.clampedEnd(d, now: now, earliest: nil)
+        return max(capped, earliest.addingTimeInterval(-timeRange))
+    }
+
+    /// 视窗左缘越过内存里的最早样本时，请求补载一页更早历史。
+    private func maybeLoadOlderHistory() {
+        guard !logger.reachedHistoryStart,
+              let earliest = logger.samples.first?.t,
+              endTime.addingTimeInterval(-timeRange) < earliest else {
+            awaitingOlderHistory = false
+            return
+        }
+        awaitingOlderHistory = true
+        logger.loadOlderHistory()
     }
 
     private func fitToAll() {
@@ -455,6 +490,7 @@ struct PowerChartView: View {
         endTime = Date()
         autoRight = true
         followLive = true
+        awaitingOlderHistory = false
         rightAxisInitialized = false
         refreshRightAxis()
     }
@@ -474,6 +510,7 @@ struct PowerChartView: View {
         timeRange = 30 * 60
         autoRight = true
         followLive = true
+        awaitingOlderHistory = false
         rightAxisInitialized = false
     }
 

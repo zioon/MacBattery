@@ -7,6 +7,7 @@ protocol MenuBarDelegate: AnyObject {
     func menuOpenSettings()
     func menuOpenChart()
     func menuOpenHealthChart()
+    func menuOpenAnalysis()
     func menuChooseCorner(_ rawValue: Int)
     func menuChooseSize(_ rawValue: Int)
     func menuTogglePassthrough()
@@ -53,6 +54,11 @@ final class MenuBarController: NSObject {
         let healthItem = NSMenuItem(title: L("menu.battery_health"), action: #selector(openHealthChart), keyEquivalent: "h")
         healthItem.target = self
         menu.addItem(healthItem)
+
+        // 电池数据分析（温度 / 剩余时间 / 容量趋势）
+        let analysisItem = NSMenuItem(title: L("menu.battery_analysis"), action: #selector(openAnalysis), keyEquivalent: "b")
+        analysisItem.target = self
+        menu.addItem(analysisItem)
 
         menu.addItem(.separator())
 
@@ -121,6 +127,7 @@ final class MenuBarController: NSObject {
     @objc private func openSettings() { delegate?.menuOpenSettings() }
     @objc private func openChart() { delegate?.menuOpenChart() }
     @objc private func openHealthChart() { delegate?.menuOpenHealthChart() }
+    @objc private func openAnalysis() { delegate?.menuOpenAnalysis() }
     @objc private func chooseCorner(_ sender: NSMenuItem) { delegate?.menuChooseCorner(sender.tag) }
     @objc private func chooseSize(_ sender: NSMenuItem) { delegate?.menuChooseSize(sender.tag) }
     @objc private func togglePassthrough(_ sender: NSMenuItem) { delegate?.menuTogglePassthrough() }

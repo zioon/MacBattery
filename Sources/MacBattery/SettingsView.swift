@@ -104,6 +104,11 @@ struct SettingsView: View {
             }
 
             HStack {
+                Button(L("settings.open_logs")) { openLogFolder() }
+                Spacer()
+            }
+
+            HStack {
                 Spacer()
                 Button(L("settings.done")) {
                     store.commit()
@@ -124,6 +129,30 @@ struct SettingsView: View {
         .onChange(of: store.tdpWatts) { _ in store.commit() }
         .onChange(of: store.chargeLimitEnabled) { _ in store.commit() }
         .onChange(of: store.chargeLimitPercent) { _ in store.commit() }
+    }
+
+    // MARK: - 日志目录
+
+    /// 在 Finder 中打开日志实际落盘的目录。
+    ///
+    /// 路径与 `PowerLogger` / `BatteryHealthLogger` 的写入目录保持一致
+    /// （`~/Library/Application Support/MacBattery`），这里只读复用，不改写任何日志逻辑。
+    private func openLogFolder() {
+        guard let support = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        else { return }
+        let folder = support.appendingPathComponent("MacBattery", isDirectory: true)
+        let fm = FileManager.default
+        // 尚未落过盘时目录可能不存在：按写入端相同的习惯尝试创建，失败也不影响使用。
+        if !fm.fileExists(atPath: folder.path) {
+            try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        // 仍打不开就退回上级目录，避免点了没有任何反应。
+        if fm.fileExists(atPath: folder.path) {
+            _ = NSWorkspace.shared.open(folder)
+        } else {
+            _ = NSWorkspace.shared.open(support)
+        }
     }
 
     // MARK: - 充电上限

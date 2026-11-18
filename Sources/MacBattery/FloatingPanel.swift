@@ -13,6 +13,7 @@ final class FloatingPanelController: NSWindowController {
     private let healthLogger = BatteryHealthLogger()
     private var chartController: PowerChartPanelController?
     private var healthPanelController: BatteryHealthPanelController?
+    private var analysisController: BatteryAnalysisPanelController?
     private let updater = UpdateChecker()
     /// 菜单栏（第四批拆出，见 MenuBarController）。
     private var menuController: MenuBarController!
@@ -129,6 +130,7 @@ final class FloatingPanelController: NSWindowController {
             settingsWindowController?.refreshLocalizedText()
             chartController?.refreshLocalizedText()
             healthPanelController?.refreshLocalizedText()
+            analysisController?.refreshLocalizedText()
             renderedScale = nil
         }
 
@@ -270,6 +272,18 @@ extension FloatingPanelController: MenuBarDelegate {
         healthPanelController = BatteryHealthPanelController.makeIfNeeded(existing: healthPanelController,
                                                                           healthLogger: healthLogger)
         healthPanelController?.showWindow(nil)
+        window?.orderFront(nil) // 保证挂件仍在菜单之上可见
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func menuOpenAnalysis() {
+        // 与历史图表共用同一份功率日志（含温度 / 剩余时间 / 容量），
+        // 健康度与循环次数取自常驻的健康日志；打开时补采一次，保证当前值即刻可见。
+        healthLogger.recordNow()
+        analysisController = BatteryAnalysisPanelController.makeIfNeeded(existing: analysisController,
+                                                                         logger: logger,
+                                                                         healthLogger: healthLogger)
+        analysisController?.showWindow(nil)
         window?.orderFront(nil) // 保证挂件仍在菜单之上可见
         NSApp.activate(ignoringOtherApps: true)
     }

@@ -18,7 +18,11 @@ final class PowerLogCompactionTests: XCTestCase {
                         cpu: Int = 10,
                         memory: Int = 50,
                         systemMilliWatts: Int = 8000,
-                        external: Bool? = nil) -> PowerSampleRecord {
+                        external: Bool? = nil,
+                        temperatureDeci: Int? = nil,
+                        remaining: Int? = nil,
+                        capacity: Int? = nil,
+                        fully: Bool? = nil) -> PowerSampleRecord {
         PowerSampleRecord(epochMilliseconds: Int((t0.timeIntervalSince1970 + offsetSeconds) * 1000),
                           batteryPercent: battery,
                           isCharging: charging,
@@ -28,7 +32,11 @@ final class PowerLogCompactionTests: XCTestCase {
                           cpuPercent: cpu,
                           memoryPercent: memory,
                           systemMilliWatts: systemMilliWatts,
-                          externalPower: external)
+                          externalPower: external,
+                          temperatureDeciCelsius: temperatureDeci,
+                          remainingMinutes: remaining,
+                          currentCapacityMilliAmpHours: capacity,
+                          fullyCharged: fully)
     }
 
     // MARK: - 定点化
@@ -50,6 +58,28 @@ final class PowerLogCompactionTests: XCTestCase {
         XCTAssertEqual(r.cpuPercent, 43)
         XCTAssertEqual(r.memoryPercent, 88)
         XCTAssertEqual(r.systemMilliWatts, 8765)
+    }
+
+    /// 新增遥测字段的定点化：温度 0.1℃、容量 mAh、剩余分钟、充满标志。
+    func testTelemetryFixedPointConversion() {
+        let r = PowerSampleRecord(t: t0,
+                                  batteryPercent: 83,
+                                  isCharging: false,
+                                  chargingWatts: 0,
+                                  chargingVoltage: 12.017,
+                                  chargingCurrent: 1.024,
+                                  cpuUsage: 0.1,
+                                  memoryUsage: 0.5,
+                                  systemWatts: 8,
+                                  externalPower: false,
+                                  temperatureCelsius: 31.04,
+                                  remainingMinutes: 395,
+                                  currentCapacity: 4117,
+                                  fullyCharged: false)
+        XCTAssertEqual(r.temperatureDeciCelsius, 310)
+        XCTAssertEqual(r.remainingMinutes, 395)
+        XCTAssertEqual(r.currentCapacityMilliAmpHours, 4117)
+        XCTAssertEqual(r.fullyCharged, false)
     }
 
     /// 毫秒时间戳必须让 0.5s 间隔的采样互不相同 —— 否则回填时 `mergedByTimestamp`
@@ -76,7 +106,9 @@ final class PowerLogCompactionTests: XCTestCase {
                                   chargingCurrent: .infinity,
                                   cpuUsage: 1.4,
                                   memoryUsage: -0.3,
-                                  systemWatts: -1)
+                                  systemWatts: -1,
+                                  temperatureCelsius: .nan,
+                                  currentCapacity: 0)
         XCTAssertEqual(r.batteryPercent, 100)
         XCTAssertEqual(r.chargingMilliWatts, 0, "负瓦数应归零")
         XCTAssertEqual(r.chargingMilliVolts, 0, "NaN 应归零")
@@ -84,6 +116,8 @@ final class PowerLogCompactionTests: XCTestCase {
         XCTAssertEqual(r.cpuPercent, 100)
         XCTAssertEqual(r.memoryPercent, 0)
         XCTAssertEqual(r.systemMilliWatts, 0)
+        XCTAssertNil(r.temperatureDeciCelsius, "NaN 温度必须是「未知」，不能画成 0℃")
+        XCTAssertNil(r.currentCapacityMilliAmpHours, "0 mAh 是无效读数，必须记为未知")
     }
 
     // MARK: - 变化门控
@@ -116,6 +150,31 @@ final class PowerLogCompactionTests: XCTestCase {
         let prev = record(offsetSeconds: 0, external: false)
         let next = record(offsetSeconds: 0.5, external: true)
         XCTAssertTrue(PowerLogGate.default.shouldPersist(previous: prev, current: next))
+    }
+
+    /// 温度跨越 1℃ 必须立即留痕，否则尖锐的发热段会被 60s 基线削平。
+    func testTemperatureChangeBeyondTolerancePersists() {
+        let prev = record(offsetSeconds: 0, temperatureDeci: 3105)
+        let next = record(offsetSeconds: 0.5, temperatureDeci: 3115)   // +1.0℃
+        XCTAssertTrue(PowerLogGate.default.shouldPersist(previous: prev, current: next))
+
+        let tiny = record(offsetSeconds: 0.5, temperatureDeci: 3109)   // +0.4℃
+        XCTAssertFalse(PowerLogGate.default.shouldPersist(previous: prev, current: tiny),
+                       "1℃ 以内的温度抖动视为噪声")
+    }
+
+    /// 「已充满 ↔ 未充满」是充电器行为的边界，必须立即记录。
+    func testFullyChargedTransitionAlwaysPersists() {
+        let prev = record(offsetSeconds: 0, fully: false)
+        let next = record(offsetSeconds: 0.5, fully: true)
+        XCTAssertTrue(PowerLogGate.default.shouldPersist(previous: prev, current: next))
+    }
+
+    /// 剩余时间与 mAh 是**随行载荷**，单独变化不应抬高写入率（靠 60s 基线兜底）。
+    func testRemainingAndCapacityAloneDoNotForcePersist() {
+        let prev = record(offsetSeconds: 0, remaining: 395, capacity: 4117)
+        let next = record(offsetSeconds: 0.5, remaining: 330, capacity: 4100)
+        XCTAssertFalse(PowerLogGate.default.shouldPersist(previous: prev, current: next))
     }
 
     func testChangeBeyondTolerancePersists() {
@@ -206,6 +265,82 @@ final class PowerLogCompactionTests: XCTestCase {
         }
     }
 
+    /// 新增的遥测列必须能原样往返（含「未知」与 -1 / -2 哨兵）。
+    func testTelemetryColumnsRoundTrip() {
+        let cases: [(Int?, Int?, Int?, Bool?)] = [
+            (3105, 395, 4117, false),
+            (0, -2, nil, true),           // 0℃ 与 -2（接通电源）都是有效值
+            (nil, -1, nil, nil),
+            (nil, nil, nil, nil)
+        ]
+        for (temperature, remaining, capacity, fully) in cases {
+            let original = record(offsetSeconds: 3,
+                                  temperatureDeci: temperature,
+                                  remaining: remaining,
+                                  capacity: capacity,
+                                  fully: fully)
+            let line = PowerLogEncoding.line(original).dropLast()
+            XCTAssertEqual(PowerLogEncoding.parseV2(line), original,
+                           "遥测列往返失败: temp=\(String(describing: temperature)) "
+                           + "remaining=\(String(describing: remaining)) "
+                           + "capacity=\(String(describing: capacity)) "
+                           + "fully=\(String(describing: fully))")
+        }
+    }
+
+    /// 升级前的 10 列行没有遥测列，必须读成「未知」，不能默认成 0℃ / 0 mAh / 未充满。
+    func testParseV2ReadsLegacyTenColumnRowWithoutTelemetry() {
+        let legacy = "1758000000000,85,0,0,0,0,10,50,8000,0"
+        guard let r = PowerLogEncoding.parseV2(Substring(legacy)) else {
+            return XCTFail("10 列旧行必须仍能解析，否则升级会丢历史")
+        }
+        XCTAssertNil(r.temperatureDeciCelsius)
+        XCTAssertNil(r.remainingMinutes)
+        XCTAssertNil(r.currentCapacityMilliAmpHours)
+        XCTAssertNil(r.fullyCharged)
+    }
+
+    /// 逐级扩展的 11–13 列行也要能读，缺失的尾列保持未知。
+    func testParseV2ReadsPartiallyExtendedRows() {
+        let eleven = "1758000000000,85,0,0,0,0,10,50,8000,0,3105"
+        guard let r11 = PowerLogEncoding.parseV2(Substring(eleven)) else {
+            return XCTFail("11 列行必须能解析")
+        }
+        XCTAssertEqual(r11.temperatureDeciCelsius, 3105)
+        XCTAssertNil(r11.remainingMinutes)
+        XCTAssertNil(r11.fullyCharged)
+
+        let twelve = "1758000000000,85,0,0,0,0,10,50,8000,0,3105,395"
+        guard let r12 = PowerLogEncoding.parseV2(Substring(twelve)) else {
+            return XCTFail("12 列行必须能解析")
+        }
+        XCTAssertEqual(r12.remainingMinutes, 395)
+        XCTAssertNil(r12.currentCapacityMilliAmpHours)
+
+        let thirteen = "1758000000000,85,0,0,0,0,10,50,8000,0,3105,395,4117"
+        guard let r13 = PowerLogEncoding.parseV2(Substring(thirteen)) else {
+            return XCTFail("13 列行必须能解析")
+        }
+        XCTAssertEqual(r13.currentCapacityMilliAmpHours, 4117)
+        XCTAssertNil(r13.fullyCharged)
+    }
+
+    /// 空列表示未知，非空的非法整数必须让整行作废（不能猜成 0）。
+    func testParseV2HandlesEmptyAndMalformedTelemetryColumns() {
+        let empty = "1758000000000,85,0,0,0,0,10,50,8000,0,,,"
+        guard let r = PowerLogEncoding.parseV2(Substring(empty)) else {
+            return XCTFail("空遥测列应解析为未知")
+        }
+        XCTAssertNil(r.temperatureDeciCelsius)
+        XCTAssertNil(r.remainingMinutes)
+        XCTAssertNil(r.currentCapacityMilliAmpHours)
+        XCTAssertNil(r.fullyCharged)
+
+        let malformed = "1758000000000,85,0,0,0,0,10,50,8000,0,31.05"
+        XCTAssertNil(PowerLogEncoding.parseV2(Substring(malformed)),
+                     "小数温度不属于定点格式，整行应作废")
+    }
+
     /// 升级前写入的 9 列 v2 行没有外电字段，必须能解析为「未知」——
     /// 若默认成 false，旧历史会被图表画成「用电池」。
     func testParseV2ReadsLegacyNineColumnRowAsUnknown() {
@@ -265,12 +400,13 @@ final class PowerLogCompactionTests: XCTestCase {
         XCTAssertNil(PowerLogEncoding.parseV1(Substring("1758000000.0,85,0")))
     }
 
-    /// 定点格式下单行约 46 字节 —— 这是本次改动的量化目标，门禁化防止回退。
+    /// 定点格式下单行约 50 字节（新增 4 个空遥测列各占 1 个逗号）——
+    /// 门禁化防止变长回退。
     func testLineWidthStaysCompact() {
         let line = PowerLogEncoding.line(record(offsetSeconds: 123.456, battery: 100, charging: true,
                                                 milliWatts: 65432, milliVolts: 65432, milliAmps: 65432,
                                                 cpu: 100, memory: 100, systemMilliWatts: 65432))
         XCTAssertLessThanOrEqual(line.utf8.count, 64,
-                                 "定点格式单行应保持在 ~46 字节；变长说明精度被意外放开了")
+                                 "定点格式单行应保持在 ~50 字节；变长说明精度被意外放开了")
     }
 }

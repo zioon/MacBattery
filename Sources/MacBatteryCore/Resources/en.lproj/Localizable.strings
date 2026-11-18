@@ -26,6 +26,7 @@
 "menu.settings" = "Settings…";
 "menu.history_chart" = "History chart…";
 "menu.battery_health" = "Battery health…";
+"menu.battery_analysis" = "Battery analysis…";
 "menu.widget" = "Show widget";
 "menu.passthrough" = "Click-through";
 "menu.charge_limit" = "Charge limit (%d%%)";
@@ -36,6 +37,7 @@
 "window.settings" = "MacBattery Settings";
 "window.history_chart" = "MacBattery History Chart";
 "window.battery_health" = "MacBattery Battery Health";
+"window.battery_analysis" = "MacBattery Battery Analysis";
 
 /* Settings window */
 "settings.language" = "Language";
@@ -51,6 +53,7 @@
 "settings.version.current" = "Version %@";
 "settings.check_update" = "Check for updates";
 "settings.update.auto_hint" = "Checks automatically at launch and downloads a new DMG into your Downloads folder.";
+"settings.open_logs" = "Open Log Folder";
 "settings.done" = "Done";
 
 /* Charge limit */
@@ -122,6 +125,35 @@
 "health.empty_placeholder" = "No health data yet (samples accumulate while the app runs)";
 "alert.reset_health.title" = "Reset health data";
 "alert.reset_health.message" = "This clears all battery health log history (including the CSV on disk) and cannot be undone. Reset?";
+
+/* Battery analysis panel */
+"analysis.temperature" = "Temperature";
+"analysis.temperature.value" = "%@ °C";
+"analysis.remaining" = "Time remaining";
+"analysis.remaining.on_ac" = "Plugged in";
+"analysis.remaining.estimating" = "Estimating…";
+"analysis.capacity" = "Charge";
+"analysis.capacity.value" = "%d mAh · %d%%";
+"analysis.health" = "Health";
+"analysis.cycles" = "Cycle count";
+"analysis.voltage" = "Voltage";
+"analysis.voltage.value" = "%@ V";
+"analysis.current" = "Current";
+"analysis.current.value" = "%@ A";
+"analysis.power_state" = "Power state";
+"analysis.state.charging" = "Charging";
+"analysis.state.full" = "Fully charged";
+"analysis.state.plugged" = "Plugged in";
+"analysis.state.battery" = "On battery";
+"analysis.state.unknown" = "Unknown";
+"analysis.axis_hint" = "Top left: °C  ·  Top right: mAh  ·  Bottom: min";
+"analysis.unit.celsius" = "°C";
+"analysis.unit.minutes" = "min";
+"analysis.window.1h" = "1h";
+"analysis.window.6h" = "6h";
+"analysis.window.24h" = "24h";
+"analysis.window.7d" = "7d";
+"analysis.empty_placeholder" = "No battery data yet (samples accumulate while the app runs)";
 
 /* Widget HUD */
 "hud.unit.watts" = "W";

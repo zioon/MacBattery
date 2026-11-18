@@ -36,6 +36,16 @@ public struct PowerSampleRecord: Equatable {
     public var memoryPercent: Int
     /// 估算整机功率 ×1000（W）
     public var systemMilliWatts: Int
+    /// 电池温度 ×10（0.1℃，`Temperature` 原始量纲）。`nil` = 未知（旧行 / 机型不提供）。
+    public var temperatureDeciCelsius: Int?
+    /// 剩余时间估算（分钟）：-1 = 系统仍在估算，-2 = 接通电源（不限），其余 = 分钟。
+    /// `nil` = 未知（旧行）。
+    public var remainingMinutes: Int?
+    /// 当前电量（mAh，`AppleRawCurrentCapacity`）。`nil` = 未知。
+    public var currentCapacityMilliAmpHours: Int?
+    /// 是否已充满（`FullyCharged`）。用来区分「已充满」与「接电但未充电（限充）」。
+    /// `nil` = 未知（旧行）。
+    public var fullyCharged: Bool?
 
     public init(epochMilliseconds: Int,
                 batteryPercent: Int,
@@ -46,7 +56,11 @@ public struct PowerSampleRecord: Equatable {
                 cpuPercent: Int,
                 memoryPercent: Int,
                 systemMilliWatts: Int,
-                externalPower: Bool? = nil) {
+                externalPower: Bool? = nil,
+                temperatureDeciCelsius: Int? = nil,
+                remainingMinutes: Int? = nil,
+                currentCapacityMilliAmpHours: Int? = nil,
+                fullyCharged: Bool? = nil) {
         self.epochMilliseconds = epochMilliseconds
         self.batteryPercent = batteryPercent
         self.isCharging = isCharging
@@ -57,6 +71,10 @@ public struct PowerSampleRecord: Equatable {
         self.cpuPercent = cpuPercent
         self.memoryPercent = memoryPercent
         self.systemMilliWatts = systemMilliWatts
+        self.temperatureDeciCelsius = temperatureDeciCelsius
+        self.remainingMinutes = remainingMinutes
+        self.currentCapacityMilliAmpHours = currentCapacityMilliAmpHours
+        self.fullyCharged = fullyCharged
     }
 
     /// 从浮点采样定点化。**所有字段夹取到物理上可能的范围**：
@@ -70,7 +88,11 @@ public struct PowerSampleRecord: Equatable {
                 cpuUsage: Double,
                 memoryUsage: Double,
                 systemWatts: Double,
-                externalPower: Bool? = nil) {
+                externalPower: Bool? = nil,
+                temperatureCelsius: Double? = nil,
+                remainingMinutes: Int? = nil,
+                currentCapacity: Int? = nil,
+                fullyCharged: Bool? = nil) {
         self.epochMilliseconds = Int((t.timeIntervalSince1970 * 1000).rounded())
         self.batteryPercent = min(100, max(0, batteryPercent))
         self.isCharging = isCharging
@@ -81,6 +103,18 @@ public struct PowerSampleRecord: Equatable {
         self.cpuPercent = PowerSampleRecord.percent(cpuUsage)
         self.memoryPercent = PowerSampleRecord.percent(memoryUsage)
         self.systemMilliWatts = PowerSampleRecord.scaled(systemWatts)
+        // 温度：℃ → 0.1℃ 整数。NaN / 无穷视为未知，不写成 0℃。
+        self.temperatureDeciCelsius = temperatureCelsius.flatMap { c -> Int? in
+            guard c.isFinite else { return nil }
+            return Int((c * 10).rounded())
+        }
+        self.remainingMinutes = remainingMinutes
+        // 非正的当前容量是无效读数（0 会被画成「电量耗尽」尖峰）。
+        self.currentCapacityMilliAmpHours = currentCapacity.flatMap { c -> Int? in
+            guard c > 0 else { return nil }
+            return c
+        }
+        self.fullyCharged = fullyCharged
     }
 
     /// 采样时刻（由毫秒还原）。
@@ -126,6 +160,8 @@ public struct PowerLogGate: Equatable {
     public var systemMilliWattTolerance: Int
     /// CPU / 内存容差（百分点）：2。
     public var percentTolerance: Int
+    /// 电池温度容差（0.1℃）：10，即 1℃。温度变化慢，1℃ 以内视为噪声。
+    public var temperatureTolerance: Int
     /// 基线兜底间隔（秒）：即使全在容差内，也至少每 60s 留一条。
     public var baselineInterval: TimeInterval
 
@@ -134,12 +170,14 @@ public struct PowerLogGate: Equatable {
                 milliAmpTolerance: Int,
                 systemMilliWattTolerance: Int,
                 percentTolerance: Int,
+                temperatureTolerance: Int,
                 baselineInterval: TimeInterval) {
         self.milliWattTolerance = milliWattTolerance
         self.milliVoltTolerance = milliVoltTolerance
         self.milliAmpTolerance = milliAmpTolerance
         self.systemMilliWattTolerance = systemMilliWattTolerance
         self.percentTolerance = percentTolerance
+        self.temperatureTolerance = temperatureTolerance
         self.baselineInterval = baselineInterval
     }
 
@@ -153,6 +191,7 @@ public struct PowerLogGate: Equatable {
         milliAmpTolerance: 100,
         systemMilliWattTolerance: 2000,
         percentTolerance: 2,
+        temperatureTolerance: 10,
         baselineInterval: 60
     )
 
@@ -173,6 +212,11 @@ public struct PowerLogGate: Equatable {
         if abs(p.systemMilliWatts - current.systemMilliWatts) >= systemMilliWattTolerance { return true }
         if abs(p.cpuPercent - current.cpuPercent) >= percentTolerance { return true }
         if abs(p.memoryPercent - current.memoryPercent) >= percentTolerance { return true }
+        // 温度跨越 1℃ 必须留痕：否则温升曲线只能靠 60s 基线，尖锐的发热段会被削平。
+        if let a = p.temperatureDeciCelsius, let b = current.temperatureDeciCelsius,
+           abs(a - b) >= temperatureTolerance { return true }
+        // 充满状态翻转（已充满 ↔ 未充满）是充电器行为的关键边界，必须立即记录。
+        if p.fullyCharged != current.fullyCharged { return true }
 
         // 全部在容差内 → 靠基线间隔兜底。
         let elapsedMillis = current.epochMilliseconds - p.epochMilliseconds
@@ -196,11 +240,14 @@ public enum PowerLogEncoding {
 
     /// v2 表头（列语义与 v1 不同，文件名也不同）。
     ///
-    /// 第 10 列 `externalPower` 是**后加**的：早期 v2 行只有前 9 列，解析时两种列数都接受
-    /// （见 `parseV2`）。列数不同即可无歧义区分新旧行，因此不像 v1→v2 那样再换文件名。
+    /// 第 10–14 列是**后加**的：早期 v2 行只有前 9 列，随后增加到 10 列（外电），
+    /// 现在为 14 列（温度 / 剩余时间 / 当前容量 / 是否充满）。解析时接受 9–14 列
+    /// （见 `parseV2`）。列数不同即可无歧义区分新旧行，因此不需要再换文件名。
+    /// 注意：已存在的文件不会重写表头（追加写），旧表头留在文件首行不影响解析。
     public static let headerV2 =
         "epochMillis,batteryPercent,isCharging,chargingMilliWatts,chargingMilliVolts,"
-        + "chargingMilliAmps,cpuPercent,memoryPercent,systemMilliWatts,externalPower\n"
+        + "chargingMilliAmps,cpuPercent,memoryPercent,systemMilliWatts,externalPower,"
+        + "temperatureDeciCelsius,remainingMinutes,currentCapacityMilliAmpHours,fullyCharged\n"
 
     /// v1 表头（保留用于识别 v1 文件头行）。
     public static let headerV1 =
@@ -210,6 +257,8 @@ public enum PowerLogEncoding {
     /// 序列化为一行（含换行符）。
     ///
     /// `externalPower`：1 / 0 = 接电 / 未接电，-1 = 未知（仅在把旧记录原样写回时出现）。
+    /// 后加的 4 列用**空串**表示未知：`remainingMinutes` 的 -1 / -2 是有效值
+    ///（估算中 / 接通电源），不能拿 -1 兼任「未知」。
     public static func line(_ r: PowerSampleRecord) -> String {
         let external: String
         switch r.externalPower {
@@ -217,9 +266,19 @@ public enum PowerLogEncoding {
         case .some(false): external = "0"
         case .none: external = "-1"
         }
+        let temperature = r.temperatureDeciCelsius.map { String($0) } ?? ""
+        let remaining = r.remainingMinutes.map { String($0) } ?? ""
+        let capacity = r.currentCapacityMilliAmpHours.map { String($0) } ?? ""
+        let fully: String
+        switch r.fullyCharged {
+        case .some(true): fully = "1"
+        case .some(false): fully = "0"
+        case .none: fully = ""
+        }
         return "\(r.epochMilliseconds),\(r.batteryPercent),\(r.isCharging ? 1 : 0),"
             + "\(r.chargingMilliWatts),\(r.chargingMilliVolts),\(r.chargingMilliAmps),"
-            + "\(r.cpuPercent),\(r.memoryPercent),\(r.systemMilliWatts),\(external)\n"
+            + "\(r.cpuPercent),\(r.memoryPercent),\(r.systemMilliWatts),\(external),"
+            + "\(temperature),\(remaining),\(capacity),\(fully)\n"
     }
 
     /// 解析一行 v2 文本。
@@ -228,11 +287,13 @@ public enum PowerLogEncoding {
     /// 不是 v2 数据，宁可丢弃也不能猜（猜错就是错数量级的历史）。
     /// 表头行与早于 2000 年的时间戳都会在这里被拒掉。
     ///
-    /// 兼容两种列数：**9 列**（升级前的 v2 行，无外电字段）与 **10 列**（当前格式）。
-    /// 两种都是定点整数且列数不同，不存在歧义，因此不需要像 v1→v2 那样另起文件名。
+    /// 兼容 **9–14 列**：9 列（升级前无外电）、10 列（+外电）、11–14 列
+    ///（+温度 / 剩余时间 / 当前容量 / 是否充满）。缺失的尾列一律读成 `nil`（未知），
+    /// 绝不默认成 0 / false —— 否则「旧数据未记录」会被图表画成 0℃ / 用电池。
+    /// 后加列允许空串（同样表示未知），但非空时必须是合法整数。
     public static func parseV2(_ line: Substring) -> PowerSampleRecord? {
         let parts = line.split(separator: ",", omittingEmptySubsequences: false)
-        guard parts.count == 9 || parts.count == 10,
+        guard (9...14).contains(parts.count),
               let epoch = Int(parts[0]),
               let battery = Int(parts[1]),
               let charging = Int(parts[2]),
@@ -248,9 +309,26 @@ public enum PowerLogEncoding {
         // 外电状态：1 / 0 为明确值；-1 或整列缺失 = 未知（**不能**默认成 false，
         // 否则「旧数据未记录」会被图表画成「用电池」）。
         var externalPower: Bool?
-        if parts.count == 10 {
+        if parts.count >= 10 {
             guard let raw = Int(parts[9]) else { return nil }
             externalPower = raw == 1 ? true : (raw == 0 ? false : nil)
+        }
+        // 可选整数列：缺失或空串 = 未知；非空但不是整数 → 整行作废。
+        func optionalInt(_ index: Int) -> (ok: Bool, value: Int?) {
+            guard parts.count > index else { return (true, nil) }
+            let s = parts[index]
+            if s.isEmpty { return (true, nil) }
+            guard let v = Int(s) else { return (false, nil) }
+            return (true, v)
+        }
+        let temperature = optionalInt(10)
+        let remaining = optionalInt(11)
+        let capacity = optionalInt(12)
+        guard temperature.ok, remaining.ok, capacity.ok else { return nil }
+        var fullyCharged: Bool?
+        if parts.count >= 14, !parts[13].isEmpty {
+            guard let raw = Int(parts[13]) else { return nil }
+            fullyCharged = raw == 1 ? true : (raw == 0 ? false : nil)
         }
         return PowerSampleRecord(epochMilliseconds: epoch,
                                  batteryPercent: min(100, max(0, battery)),
@@ -261,7 +339,11 @@ public enum PowerLogEncoding {
                                  cpuPercent: min(100, max(0, cpu)),
                                  memoryPercent: min(100, max(0, memory)),
                                  systemMilliWatts: max(0, systemWatts),
-                                 externalPower: externalPower)
+                                 externalPower: externalPower,
+                                 temperatureDeciCelsius: temperature.value,
+                                 remainingMinutes: remaining.value,
+                                 currentCapacityMilliAmpHours: capacity.value.map { max(0, $0) },
+                                 fullyCharged: fullyCharged)
     }
 
     /// 解析一行 v1（全精度 Double）文本为定点记录。仅用于读取历史 v1 文件。

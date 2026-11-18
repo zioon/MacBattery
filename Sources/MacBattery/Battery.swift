@@ -48,11 +48,32 @@ enum BatteryReader {
         return 0
     }
 
-    /// 当前充电功率（瓦特）与是否正在充电。
+    /// 一次电池状态读取的完整结果。
+    ///
+    /// 除充电功率与充放电状态外，另带三组**时间敏感、值得长期留痕**的遥测：
+    /// 温度、当前容量（mAh）与是否已充满。三者与充电状态共用**同一次**注册表读取，
+    /// 不额外增加 0.5s 采样链路里的 IOKit 属性拷贝。
+    struct BatteryStatus {
+        var isCharging: Bool
+        /// 充电功率（瓦特），非充电时为 0。
+        var watts: Double
+        /// 电池电压（伏特），任何状态下都有读数。
+        var voltage: Double
+        /// 电流绝对值（安培），任何状态下都有读数；方向由 `isCharging` 判断。
+        var current: Double
+        /// 电池温度（℃）。取不到时为 nil —— 不写 0，避免「不支持该键」被画成 0℃ 尖峰。
+        var temperatureCelsius: Double?
+        /// 当前电量（mAh，`AppleRawCurrentCapacity`）。取不到或非正时为 nil。
+        var currentCapacity: Int?
+        /// 是否已充满（`FullyCharged`）。取不到时为 nil。
+        var fullyCharged: Bool?
+    }
+
+    /// 当前电池状态：充电功率 / 电压 / 电流 + 温度 / 当前容量 / 是否已充满。
     ///
     /// 通过 AppleSmartBattery 的 `Voltage`(mV) × `Amperage`(mA) 计算。
     /// `Amperage` 为负时表示电流正在充入电池，取绝对值即为充电功率。
-    static func chargingStatus() -> (isCharging: Bool, watts: Double, voltage: Double, current: Double) {
+    static func chargingStatus() -> BatteryStatus {
         var ampere = 0
         var volt = 0
         var chargingFlag = 0
@@ -71,7 +92,8 @@ enum BatteryReader {
         let service = currentService()
         guard service != 0, var props = readProperties(service) else {
             lock.unlock()
-            return (false, 0, 0, 0)
+            return BatteryStatus(isCharging: false, watts: 0, voltage: 0, current: 0,
+                                 temperatureCelsius: nil, currentCapacity: nil, fullyCharged: nil)
         }
 
         ampere = intValue(props["Amperage"])
@@ -125,7 +147,21 @@ enum BatteryReader {
         let watts = (isCharging && volt > 0 && ampere != 0)
             ? ampereAbs * Double(volt) / 1_000_000.0
             : 0
-        return (isCharging, watts, voltValue, ampereAbs / 1000.0)
+
+        // 时间敏感遥测：温度 / 当前容量 / 是否充满。与上面共用同一次属性读取，
+        // 不新增 IOKit 调用。取不到一律用 nil 表示「未知」，不伪造 0。
+        // Temperature 的单位是 0.1℃，故除以 10 转成 ℃。
+        let temperature: Double? = props["Temperature"] != nil
+            ? Double(intValue(props["Temperature"])) / 10.0
+            : nil
+        let capacity = intValue(props["AppleRawCurrentCapacity"])
+        return BatteryStatus(isCharging: isCharging,
+                             watts: watts,
+                             voltage: voltValue,
+                             current: ampereAbs / 1000.0,
+                             temperatureCelsius: temperature,
+                             currentCapacity: capacity > 0 ? capacity : nil,
+                             fullyCharged: boolValue(props["FullyCharged"]))
     }
 
     /// 电池健康信息（变化缓慢，供健康图表按需读取）。
@@ -291,5 +327,18 @@ enum BatteryReader {
         if let n = value as? NSNumber { return n.intValue }
         if let s = value as? String { return Int(s) ?? 0 }
         return 0
+    }
+
+    /// 从注册表属性字典中尽量提取 Bool（兼容 CFBoolean、CFNumber 0/1 与 "Yes"/"No"）。
+    /// 取不到时返回 nil —— 与 `intValue` 的 0 默认值不同，布尔状态无法用 0 表达「未知」。
+    private static func boolValue(_ value: Any?) -> Bool? {
+        guard let value else { return nil }
+        if let b = value as? Bool { return b }
+        if let n = value as? NSNumber { return n.boolValue }
+        if let s = value as? String {
+            if s == "Yes" || s == "true" || s == "1" { return true }
+            if s == "No" || s == "false" || s == "0" { return false }
+        }
+        return nil
     }
 }

@@ -24,8 +24,16 @@ enum Sampler {
         /// 整机功率是否为估算值（true = 估算回退，UI 以 `~` 前缀区分）。仅用于实时 UI，不入 CSV。
         var systemWattsIsEstimate = false
         /// 电池剩余时间估计（秒，与系统菜单栏同源）。
-        /// -1 = 系统仍在估算；-2 = 接通电源（不限）；其余 = 预计剩余秒数。仅用于实时 UI，不入 CSV。
+        /// -1 = 系统仍在估算；-2 = 接通电源（不限）；其余 = 预计剩余秒数。
         var batteryTimeRemaining: Double = -1
+        /// 电池温度（℃）。nil = 未取到（不写 0，避免图表画成 0℃）。
+        var temperatureCelsius: Double?
+        /// 剩余时间估算（分钟）：-1 估算中 / -2 接通电源 / 其余为分钟。nil = 未知。
+        var remainingMinutes: Int?
+        /// 当前电量（mAh）。nil = 未取到。
+        var currentCapacity: Int?
+        /// 是否已充满（区分「已充满」与「接电未充电」）。nil = 未知。
+        var fullyCharged: Bool?
     }
 
     static func sample(tdp: Double) -> Frame {
@@ -42,12 +50,16 @@ enum Sampler {
         f.chargingWatts = charging.watts
         f.chargingVoltage = charging.voltage
         f.chargingCurrent = charging.current
+        f.temperatureCelsius = charging.temperatureCelsius
+        f.currentCapacity = charging.currentCapacity
+        f.fullyCharged = charging.fullyCharged
 
         // 剩余时间估计：与系统菜单栏同源的 IOPS 官方估算（无子进程、无额外 IO）。
         // -2 表示接通电源，据此同时判定「是否正在用电池供电」（含已充满但插着电的状态）。
         let estimate = IOPSGetTimeRemainingEstimate()
         f.batteryTimeRemaining = estimate
         f.onBattery = estimate != -2
+        f.remainingMinutes = Self.remainingMinutes(from: estimate)
 
         // 先读一次 CPU 使用率，整机功率估算复用同一采样，避免重复计算。
         let u = SystemPower.cpuUsage()
@@ -57,6 +69,15 @@ enum Sampler {
         f.systemWatts = reading.watts
         f.systemWattsIsEstimate = reading.isEstimate
         return f
+    }
+
+    /// IOPS 剩余时间（秒）→ 落盘用的分钟数。
+    /// 保留系统哨兵：-2 = 接通电源（不限），-1 = 仍在估算；其它非正数视为异常读数，返回 nil。
+    private static func remainingMinutes(from seconds: Double) -> Int? {
+        guard seconds.isFinite else { return nil }
+        if seconds == -1 || seconds == -2 { return Int(seconds) }
+        guard seconds > 0 else { return nil }
+        return max(0, Int((seconds / 60).rounded()))
     }
 }
 
@@ -225,7 +246,11 @@ final class PowerMonitor: ObservableObject {
             chargingCurrent: frame.chargingCurrent,
             cpuUsage: frame.cpuUsage,
             memoryUsage: frame.memoryUsage,
-            systemWatts: frame.systemWatts
+            systemWatts: frame.systemWatts,
+            temperatureCelsius: frame.temperatureCelsius,
+            remainingMinutes: frame.remainingMinutes,
+            currentCapacity: frame.currentCapacity,
+            fullyCharged: frame.fullyCharged
         ))
     }
 
