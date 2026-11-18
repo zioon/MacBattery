@@ -12,6 +12,7 @@ enum Sampler {
         var batteryPercent = 0
         var isCharging = false
         /// 是否正在用电池供电（未接外电）。取自 IOPS 剩余时间估计：-2 表示接通电源。
+        /// 落盘时以 `!onBattery` 记为「外部电源已接入」。
         var onBattery = false
         /// 充电功率（瓦特）
         var chargingWatts = 0.0
@@ -217,6 +218,8 @@ final class PowerMonitor: ObservableObject {
             t: Date(),
             batteryPercent: frame.batteryPercent,
             isCharging: frame.isCharging,
+            // 与充电状态分开记：已充满 / 限充时「接了电但未充电」也要能在历史图表上区分。
+            externalPower: !frame.onBattery,
             chargingWatts: frame.chargingWatts,
             chargingVoltage: frame.chargingVoltage,
             chargingCurrent: frame.chargingCurrent,

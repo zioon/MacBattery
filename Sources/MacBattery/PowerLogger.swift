@@ -11,6 +11,11 @@ struct PowerSample {
     var t: Date
     var batteryPercent: Int
     var isCharging: Bool
+    /// 是否接通外部电源（true = 插着电）。
+    ///
+    /// 可选只为兼容旧磁盘数据：实时采样**永远**有明确值；
+    /// 升级前落盘的行没有这一列，回填后为 nil（未知）。
+    var externalPower: Bool?
     var chargingWatts: Double
     var chargingVoltage: Double   // 伏特
     var chargingCurrent: Double   // 安培
@@ -27,6 +32,7 @@ struct PowerSample {
     init(t: Date,
          batteryPercent: Int,
          isCharging: Bool,
+         externalPower: Bool?,
          chargingWatts: Double,
          chargingVoltage: Double,
          chargingCurrent: Double,
@@ -36,6 +42,7 @@ struct PowerSample {
         self.t = t
         self.batteryPercent = batteryPercent
         self.isCharging = isCharging
+        self.externalPower = externalPower
         self.chargingWatts = chargingWatts
         self.chargingVoltage = chargingVoltage
         self.chargingCurrent = chargingCurrent
@@ -49,6 +56,7 @@ struct PowerSample {
         t = record.timestamp
         batteryPercent = record.batteryPercent
         isCharging = record.isCharging
+        externalPower = record.externalPower
         chargingWatts = Double(record.chargingMilliWatts) / 1000
         chargingVoltage = Double(record.chargingMilliVolts) / 1000
         chargingCurrent = Double(record.chargingMilliAmps) / 1000
@@ -67,7 +75,8 @@ struct PowerSample {
                           chargingCurrent: chargingCurrent,
                           cpuUsage: cpuUsage,
                           memoryUsage: memoryUsage,
-                          systemWatts: systemWatts)
+                          systemWatts: systemWatts,
+                          externalPower: externalPower)
     }
 }
 

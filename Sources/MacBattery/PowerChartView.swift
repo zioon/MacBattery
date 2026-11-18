@@ -135,8 +135,19 @@ struct PowerChartView: View {
             legendToggle(L("chart.series.voltage"), $showVoltage, voltageColor, value: { $0.chargingVoltage })
             legendToggle(L("chart.series.current"), $showCurrent, currentColor, value: { $0.chargingCurrent })
             Spacer()
+            // 背景带图例：说明曲线背后的色块含义（不可点击，仅作说明）。
+            bandLegendItem(L("chart.state.charging"), PowerBandColor.chargingStrong)
+            bandLegendItem(L("chart.state.plugged"), PowerBandColor.pluggedStrong)
         }
         .font(.caption)
+    }
+
+    /// 背景带图例项（色块 + 文案）。
+    private func bandLegendItem(_ title: String, _ color: Color) -> some View {
+        HStack(spacing: 4) {
+            RoundedRectangle(cornerRadius: 2).fill(color).frame(width: 10, height: 9)
+            Text(title).foregroundColor(.secondary)
+        }
     }
 
     private func legendToggle(_ title: String, _ binding: Binding<Bool>, _ color: Color,
@@ -219,7 +230,13 @@ struct PowerChartView: View {
         let targetE = startE + Double(hx - plot.minX) / plot.plotW * timeRange
         guard let s = ChartInteraction.nearestSample(upTo: targetE, in: samples, timestamp: { $0.t }) else { return nil }
         let x = plot.minX + (s.t.timeIntervalSince1970 - startE) / timeRange * plot.plotW
-        let rows = series.map { ChartHoverInfo.Row(color: $0.color, title: $0.title, value: ChartAxes.fmtVal($0.dsp(s))) }
+        var rows = series.map { ChartHoverInfo.Row(color: $0.color, title: $0.title, value: ChartAxes.fmtVal($0.dsp(s))) }
+        // 电源状态放在首行：数值行只说明「多少」，状态行说明「当时在充电还是在用电池」。
+        let state = PowerState.of(s)
+        rows.insert(ChartHoverInfo.Row(color: state.hoverColor,
+                                       title: L("chart.hover.power_state"),
+                                       value: state.label),
+                    at: 0)
         return ChartHoverInfo(x: x, date: s.t, rows: rows)
     }
 
@@ -495,6 +512,64 @@ struct PowerChartView: View {
 /// 系列归属的纵轴：percent = 左轴 0–100%；value = 右轴真实数值。
 private enum AxisKind { case percent, value }
 
+/// 电源时段背景带配色（不透明版本供图例色块使用，半透明版本供绘图区背景）。
+private enum PowerBandColor {
+    static let chargingStrong = Color(red: 0.96, green: 0.82, blue: 0.30).opacity(0.55)
+    static let charging = Color(red: 0.96, green: 0.82, blue: 0.30).opacity(0.16)
+    static let pluggedStrong = Color(red: 0.30, green: 0.60, blue: 1.0).opacity(0.45)
+    static let plugged = Color(red: 0.30, green: 0.60, blue: 1.0).opacity(0.10)
+}
+
+/// 一个采样时刻的电源状态。
+///
+/// - `charging`：正在充电（`isCharging`，有充电功率）。
+/// - `plugged`：接了外电但未充电（已充满 / 限充）。
+/// - `onBattery`：用电池供电。
+/// - `unknown`：旧历史没有外电字段，且当时不在充电 —— 无从判断，**不猜**。
+private enum PowerState: Equatable {
+    case charging
+    case plugged
+    case onBattery
+    case unknown
+
+    static func of(_ s: PowerSample) -> PowerState {
+        // 充电中一定接了外电，优先判充电：旧数据没有外电列时也能正确着色。
+        if s.isCharging { return .charging }
+        switch s.externalPower {
+        case .some(true): return .plugged
+        case .some(false): return .onBattery
+        case .none: return .unknown
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .charging: return L("chart.state.charging")
+        case .plugged: return L("chart.state.plugged")
+        case .onBattery: return L("chart.state.battery")
+        case .unknown: return L("chart.state.unknown")
+        }
+    }
+
+    var hoverColor: Color {
+        switch self {
+        case .charging: return PowerBandColor.chargingStrong
+        case .plugged: return PowerBandColor.pluggedStrong
+        case .onBattery: return Color(white: 0.72)
+        case .unknown: return Color(white: 0.55)
+        }
+    }
+
+    /// 背景带颜色；用电池 / 未知不着色（默认背景即可）。
+    var bandColor: Color? {
+        switch self {
+        case .charging: return PowerBandColor.charging
+        case .plugged: return PowerBandColor.plugged
+        case .onBattery, .unknown: return nil
+        }
+    }
+}
+
 /// 一个可绘制的系列定义。
 private struct SeriesDef {
     let title: String
@@ -523,7 +598,48 @@ private struct ChartDraw {
         let points: [CGPoint]
     }
 
+    /// 一段电源状态的背景带（时间界，秒级 epoch）。用电池 / 未知状态不生成。
+    struct StateBand {
+        let t0: Double
+        let t1: Double
+        let color: Color
+    }
+
     var hasValueSeries: Bool { series.contains { $0.axis == .value } }
+
+    /// 由可视样本切出「充电中 / 已接电源」的连续时段。
+    ///
+    /// 边界取相邻两个样本时间的中点：状态切换发生在两次采样之间，取中点是最小误差的估计。
+    /// 首个时段从窗口左缘起算（状态沿用第一个可见样本），最后一段延伸到窗口右缘
+    /// （窗口内仍有样本时）或最后一个样本时刻，避免色块与曲线错位。
+    func buildStateBands() -> [StateBand] {
+        guard sampleEnd > sampleStart else { return [] }
+        var bands: [StateBand] = []
+        var state = PowerState.of(samples[sampleStart])
+        var runStart = startE
+        var i = sampleStart + 1
+        while i < sampleEnd {
+            let next = PowerState.of(samples[i])
+            if next != state {
+                let prevT = samples[i - 1].t.timeIntervalSince1970
+                let curT = samples[i].t.timeIntervalSince1970
+                let boundary = (prevT + curT) / 2
+                if let color = state.bandColor, boundary > runStart {
+                    bands.append(StateBand(t0: runStart, t1: boundary, color: color))
+                }
+                state = next
+                runStart = boundary
+            }
+            i += 1
+        }
+        let lastT = samples[sampleEnd - 1].t.timeIntervalSince1970
+        // 窗口右侧仍有样本 → 状态延续到窗口右缘；否则到最后一个样本为止。
+        let endT = sampleEnd < samples.count ? max(lastT, endE) : lastT
+        if let color = state.bandColor, endT > runStart {
+            bands.append(StateBand(t0: runStart, t1: endT, color: color))
+        }
+        return bands
+    }
 
     /// 把可视样本按「绝对时间锚定桶」取平均（每桶一个点）后，分别按主/副轴换算成各系列的 (x, y) 点。
     ///
@@ -596,6 +712,15 @@ private struct ChartDraw {
         clip.addRect(CGRect(x: plot.minX, y: plot.minY, width: plot.plotW, height: plot.plotH))
         context.drawLayer { layer in
             layer.clip(to: clip)
+            // 充电 / 接电时段背景带：画在网格与曲线之下，作为时间轴的「上下文」。
+            for band in buildStateBands() {
+                let left = max(plot.minX, min(plot.maxX, timeX(band.t0)))
+                let right = max(plot.minX, min(plot.maxX, timeX(band.t1)))
+                guard right - left >= 0.5 else { continue }
+                layer.fill(Path(CGRect(x: left, y: plot.minY,
+                                       width: right - left, height: plot.plotH)),
+                           with: .color(band.color))
+            }
             // 主轴（%）网格
             for y in ChartAxes.yTicks(percentRange.lowerBound, percentRange.upperBound) {
                 let yy = percentY(y)

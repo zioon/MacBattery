@@ -94,6 +94,11 @@
 "chart.window.24h" = "24h";
 "chart.summary.samples.one" = "%d sample · last %@";
 "chart.summary.samples.other" = "%d samples · last %@";
+"chart.state.charging" = "Charging";
+"chart.state.plugged" = "Plugged in";
+"chart.state.battery" = "On battery";
+"chart.state.unknown" = "Unknown";
+"chart.hover.power_state" = "Power";
 "alert.reset_history.title" = "Reset history data";
 "alert.reset_history.message" = "This clears all power log history (including the CSV on disk) and cannot be undone. Reset?";
 

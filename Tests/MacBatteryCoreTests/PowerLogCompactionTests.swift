@@ -17,7 +17,8 @@ final class PowerLogCompactionTests: XCTestCase {
                         milliAmps: Int = 0,
                         cpu: Int = 10,
                         memory: Int = 50,
-                        systemMilliWatts: Int = 8000) -> PowerSampleRecord {
+                        systemMilliWatts: Int = 8000,
+                        external: Bool? = nil) -> PowerSampleRecord {
         PowerSampleRecord(epochMilliseconds: Int((t0.timeIntervalSince1970 + offsetSeconds) * 1000),
                           batteryPercent: battery,
                           isCharging: charging,
@@ -26,7 +27,8 @@ final class PowerLogCompactionTests: XCTestCase {
                           chargingMilliAmps: milliAmps,
                           cpuPercent: cpu,
                           memoryPercent: memory,
-                          systemMilliWatts: systemMilliWatts)
+                          systemMilliWatts: systemMilliWatts,
+                          externalPower: external)
     }
 
     // MARK: - 定点化
@@ -109,6 +111,13 @@ final class PowerLogCompactionTests: XCTestCase {
         XCTAssertTrue(PowerLogGate.default.shouldPersist(previous: prev, current: next))
     }
 
+    /// 插拔电源同样必须立即留痕：否则图表上充电 / 接电时段带的边界会被基线间隔拉偏。
+    func testExternalPowerChangeAlwaysPersists() {
+        let prev = record(offsetSeconds: 0, external: false)
+        let next = record(offsetSeconds: 0.5, external: true)
+        XCTAssertTrue(PowerLogGate.default.shouldPersist(previous: prev, current: next))
+    }
+
     func testChangeBeyondTolerancePersists() {
         let prev = record(offsetSeconds: 0, cpu: 10)
         let next = record(offsetSeconds: 0.5, cpu: 12)   // 恰好达到 2 个百分点容差
@@ -185,6 +194,27 @@ final class PowerLogCompactionTests: XCTestCase {
                               cpu: 43, memory: 88, systemMilliWatts: 8765)
         let line = PowerLogEncoding.line(original).dropLast()   // 去掉换行符
         XCTAssertEqual(PowerLogEncoding.parseV2(line), original)
+    }
+
+    /// 后加的 `externalPower` 列必须能原样往返（含「未知」）。
+    func testExternalPowerRoundTrips() {
+        for external in [true, false, nil] as [Bool?] {
+            let original = record(offsetSeconds: 1, external: external)
+            let line = PowerLogEncoding.line(original).dropLast()
+            XCTAssertEqual(PowerLogEncoding.parseV2(line), original,
+                           "externalPower=\(String(describing: external)) 必须能原样读回")
+        }
+    }
+
+    /// 升级前写入的 9 列 v2 行没有外电字段，必须能解析为「未知」——
+    /// 若默认成 false，旧历史会被图表画成「用电池」。
+    func testParseV2ReadsLegacyNineColumnRowAsUnknown() {
+        let legacy = "1758000000000,85,0,0,0,0,10,50,8000"
+        guard let r = PowerLogEncoding.parseV2(Substring(legacy)) else {
+            return XCTFail("9 列旧行必须仍能解析，否则升级会丢历史")
+        }
+        XCTAssertNil(r.externalPower)
+        XCTAssertEqual(r.batteryPercent, 85)
     }
 
     /// v1 与 v2 列数相同，格式版本必须靠文件名区分 —— 逐列启发式会有歧义

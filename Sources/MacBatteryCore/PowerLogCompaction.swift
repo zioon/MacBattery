@@ -6,7 +6,7 @@ import Foundation
 /// → 约 24.7MB/天、700MB/月，而回填的读取上限只有 48MB，
 /// 于是文件长到两天以后历史就永远读不出来了（静默丢历史）。
 ///
-/// 定点化把单行压到约 46 字节（-68%），真正的数量级收益来自 `PowerLogGate`。
+/// 定点化把单行压到约 48 字节（-66%），真正的数量级收益来自 `PowerLogGate`。
 ///
 /// 字段一律取「有界整数」，刻意不用浮点：
 /// - 时间用**毫秒**（不是整秒）：整秒会让同秒内的多条记录时间戳相同，
@@ -18,6 +18,12 @@ public struct PowerSampleRecord: Equatable {
     public var epochMilliseconds: Int
     public var batteryPercent: Int
     public var isCharging: Bool
+    /// 是否接通外部电源（true = 插着电）。
+    ///
+    /// `nil` = **未知**：v1 全精度行与升级前的 9 列 v2 行都没有这一列。
+    /// 必须与 `isCharging` 分开记：已充满 / 限充时「接了电但不在充电」是常见状态，
+    /// 只有 `isCharging` 时它和「正在用电池」无法区分。
+    public var externalPower: Bool?
     /// 充电功率 ×1000（W）
     public var chargingMilliWatts: Int
     /// 充电电压 ×1000（V）
@@ -39,10 +45,12 @@ public struct PowerSampleRecord: Equatable {
                 chargingMilliAmps: Int,
                 cpuPercent: Int,
                 memoryPercent: Int,
-                systemMilliWatts: Int) {
+                systemMilliWatts: Int,
+                externalPower: Bool? = nil) {
         self.epochMilliseconds = epochMilliseconds
         self.batteryPercent = batteryPercent
         self.isCharging = isCharging
+        self.externalPower = externalPower
         self.chargingMilliWatts = chargingMilliWatts
         self.chargingMilliVolts = chargingMilliVolts
         self.chargingMilliAmps = chargingMilliAmps
@@ -61,10 +69,12 @@ public struct PowerSampleRecord: Equatable {
                 chargingCurrent: Double,
                 cpuUsage: Double,
                 memoryUsage: Double,
-                systemWatts: Double) {
+                systemWatts: Double,
+                externalPower: Bool? = nil) {
         self.epochMilliseconds = Int((t.timeIntervalSince1970 * 1000).rounded())
         self.batteryPercent = min(100, max(0, batteryPercent))
         self.isCharging = isCharging
+        self.externalPower = externalPower
         self.chargingMilliWatts = PowerSampleRecord.scaled(chargingWatts)
         self.chargingMilliVolts = PowerSampleRecord.scaled(chargingVoltage)
         self.chargingMilliAmps = PowerSampleRecord.scaled(chargingCurrent)
@@ -155,6 +165,8 @@ public struct PowerLogGate: Equatable {
         guard let p = previous else { return true }
         if p.batteryPercent != current.batteryPercent { return true }
         if p.isCharging != current.isCharging { return true }
+        // 插拔电源必须留痕：否则图表上「充电 / 接电」时段带的边界会被基线间隔拉偏 60s。
+        if p.externalPower != current.externalPower { return true }
         if abs(p.chargingMilliWatts - current.chargingMilliWatts) >= milliWattTolerance { return true }
         if abs(p.chargingMilliVolts - current.chargingMilliVolts) >= milliVoltTolerance { return true }
         if abs(p.chargingMilliAmps - current.chargingMilliAmps) >= milliAmpTolerance { return true }
@@ -183,9 +195,12 @@ public struct PowerLogGate: Equatable {
 public enum PowerLogEncoding {
 
     /// v2 表头（列语义与 v1 不同，文件名也不同）。
+    ///
+    /// 第 10 列 `externalPower` 是**后加**的：早期 v2 行只有前 9 列，解析时两种列数都接受
+    /// （见 `parseV2`）。列数不同即可无歧义区分新旧行，因此不像 v1→v2 那样再换文件名。
     public static let headerV2 =
         "epochMillis,batteryPercent,isCharging,chargingMilliWatts,chargingMilliVolts,"
-        + "chargingMilliAmps,cpuPercent,memoryPercent,systemMilliWatts\n"
+        + "chargingMilliAmps,cpuPercent,memoryPercent,systemMilliWatts,externalPower\n"
 
     /// v1 表头（保留用于识别 v1 文件头行）。
     public static let headerV1 =
@@ -193,10 +208,18 @@ public enum PowerLogEncoding {
         + "cpuUsage,memoryUsage,systemWatts\n"
 
     /// 序列化为一行（含换行符）。
+    ///
+    /// `externalPower`：1 / 0 = 接电 / 未接电，-1 = 未知（仅在把旧记录原样写回时出现）。
     public static func line(_ r: PowerSampleRecord) -> String {
-        "\(r.epochMilliseconds),\(r.batteryPercent),\(r.isCharging ? 1 : 0),"
+        let external: String
+        switch r.externalPower {
+        case .some(true): external = "1"
+        case .some(false): external = "0"
+        case .none: external = "-1"
+        }
+        return "\(r.epochMilliseconds),\(r.batteryPercent),\(r.isCharging ? 1 : 0),"
             + "\(r.chargingMilliWatts),\(r.chargingMilliVolts),\(r.chargingMilliAmps),"
-            + "\(r.cpuPercent),\(r.memoryPercent),\(r.systemMilliWatts)\n"
+            + "\(r.cpuPercent),\(r.memoryPercent),\(r.systemMilliWatts),\(external)\n"
     }
 
     /// 解析一行 v2 文本。
@@ -204,9 +227,12 @@ public enum PowerLogEncoding {
     /// 全部列必须是**合法整数**—— 这是刻意的：定点格式里出现小数点/指数说明该行
     /// 不是 v2 数据，宁可丢弃也不能猜（猜错就是错数量级的历史）。
     /// 表头行与早于 2000 年的时间戳都会在这里被拒掉。
+    ///
+    /// 兼容两种列数：**9 列**（升级前的 v2 行，无外电字段）与 **10 列**（当前格式）。
+    /// 两种都是定点整数且列数不同，不存在歧义，因此不需要像 v1→v2 那样另起文件名。
     public static func parseV2(_ line: Substring) -> PowerSampleRecord? {
         let parts = line.split(separator: ",", omittingEmptySubsequences: false)
-        guard parts.count == 9,
+        guard parts.count == 9 || parts.count == 10,
               let epoch = Int(parts[0]),
               let battery = Int(parts[1]),
               let charging = Int(parts[2]),
@@ -219,6 +245,13 @@ public enum PowerLogEncoding {
         else { return nil }
         // 2000-01-01 = 946684800 秒 = 946684800000 毫秒。早于此即无效行 / 表头。
         guard epoch >= 946_684_800_000 else { return nil }
+        // 外电状态：1 / 0 为明确值；-1 或整列缺失 = 未知（**不能**默认成 false，
+        // 否则「旧数据未记录」会被图表画成「用电池」）。
+        var externalPower: Bool?
+        if parts.count == 10 {
+            guard let raw = Int(parts[9]) else { return nil }
+            externalPower = raw == 1 ? true : (raw == 0 ? false : nil)
+        }
         return PowerSampleRecord(epochMilliseconds: epoch,
                                  batteryPercent: min(100, max(0, battery)),
                                  isCharging: charging == 1,
@@ -227,7 +260,8 @@ public enum PowerLogEncoding {
                                  chargingMilliAmps: max(0, milliAmps),
                                  cpuPercent: min(100, max(0, cpu)),
                                  memoryPercent: min(100, max(0, memory)),
-                                 systemMilliWatts: max(0, systemWatts))
+                                 systemMilliWatts: max(0, systemWatts),
+                                 externalPower: externalPower)
     }
 
     /// 解析一行 v1（全精度 Double）文本为定点记录。仅用于读取历史 v1 文件。
