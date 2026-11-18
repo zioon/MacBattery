@@ -18,7 +18,7 @@ permissions:
 jobs:
   # 纯逻辑层单测（U-09）：发布前的回归护栏。构建与发版都依赖本 job 通过。
   test:
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -40,10 +40,11 @@ jobs:
 
   build-and-release:
     needs: test
-    # macOS-14 (arm64) hosted runner is free on public repos.
+    # macOS-15 (arm64) hosted runner is free on public repos（macOS 14 镜像已于
+    # 2026-11-02 退役，沿用旧标签会在 2 秒内被取消）。
     # Build a universal binary (arm64 + x86_64) so it runs on both
     # Apple Silicon and Intel Macs.
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
