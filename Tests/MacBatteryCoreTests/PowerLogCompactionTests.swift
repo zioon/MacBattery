@@ -268,7 +268,7 @@ final class PowerLogCompactionTests: XCTestCase {
     /// 新增的遥测列必须能原样往返（含「未知」与 -1 / -2 哨兵）。
     func testTelemetryColumnsRoundTrip() {
         let cases: [(Int?, Int?, Int?, Bool?)] = [
-            (3105, 395, 4117, false),
+            (374, 395, 4117, false),      // 37.4℃
             (0, -2, nil, true),           // 0℃ 与 -2（接通电源）都是有效值
             (nil, -1, nil, nil),
             (nil, nil, nil, nil)
@@ -302,27 +302,76 @@ final class PowerLogCompactionTests: XCTestCase {
 
     /// 逐级扩展的 11–13 列行也要能读，缺失的尾列保持未知。
     func testParseV2ReadsPartiallyExtendedRows() {
-        let eleven = "1758000000000,85,0,0,0,0,10,50,8000,0,3105"
+        let eleven = "1758000000000,85,0,0,0,0,10,50,8000,0,374"
         guard let r11 = PowerLogEncoding.parseV2(Substring(eleven)) else {
             return XCTFail("11 列行必须能解析")
         }
-        XCTAssertEqual(r11.temperatureDeciCelsius, 3105)
+        XCTAssertEqual(r11.temperatureDeciCelsius, 374)
         XCTAssertNil(r11.remainingMinutes)
         XCTAssertNil(r11.fullyCharged)
 
-        let twelve = "1758000000000,85,0,0,0,0,10,50,8000,0,3105,395"
+        let twelve = "1758000000000,85,0,0,0,0,10,50,8000,0,374,395"
         guard let r12 = PowerLogEncoding.parseV2(Substring(twelve)) else {
             return XCTFail("12 列行必须能解析")
         }
         XCTAssertEqual(r12.remainingMinutes, 395)
         XCTAssertNil(r12.currentCapacityMilliAmpHours)
 
-        let thirteen = "1758000000000,85,0,0,0,0,10,50,8000,0,3105,395,4117"
+        let thirteen = "1758000000000,85,0,0,0,0,10,50,8000,0,374,395,4117"
         guard let r13 = PowerLogEncoding.parseV2(Substring(thirteen)) else {
             return XCTFail("13 列行必须能解析")
         }
         XCTAssertEqual(r13.currentCapacityMilliAmpHours, 4117)
         XCTAssertNil(r13.fullyCharged)
+    }
+
+    /// v1.5.0 早期的温度量纲错误：落盘值等于注册表原始值（不是 ℃）。
+    /// 读取时必须按本机量纲换算回来，且换算后仍不可能的坏值记为未知。
+    func testParseV2RepairsLegacyRawTemperature() {
+        func parse(_ temperature: String) -> PowerSampleRecord? {
+            PowerLogEncoding.parseV2(
+                Substring("1758000000000,85,0,0,0,0,10,50,8000,0,\(temperature)"))
+        }
+
+        // 3105 的还原结果随硬件量纲不同：Intel 310.5K = 37.35℃ → 374；Apple silicon → 311。
+        let repaired: Int = BatteryTemperature.isAppleSilicon ? 311 : 374
+        guard let legacy = parse("3105") else { return XCTFail("11 列行必须能解析") }
+        XCTAssertEqual(legacy.temperatureDeciCelsius, repaired,
+                       "旧原始值 3105 必须按本机量纲还原，而不是当成 310℃")
+
+        guard let normal = parse("374") else { return XCTFail("11 列行必须能解析") }
+        XCTAssertEqual(normal.temperatureDeciCelsius, 374, "新版正确值必须原样保留")
+
+        guard let zero = parse("0") else { return XCTFail("11 列行必须能解析") }
+        XCTAssertEqual(zero.temperatureDeciCelsius, 0, "0℃ 仍是有效读数")
+
+        guard let garbage = parse("12345") else { return XCTFail("11 列行必须能解析") }
+        XCTAssertNil(garbage.temperatureDeciCelsius, "换算后仍不可能的读数必须记为未知")
+    }
+
+    /// 两种量纲的换算与旧值修正：显式指定 scale，测试结果不依赖跑测机器的架构。
+    func testTemperatureScaleConversionAndLegacyRepair() {
+        // Intel：0.1K → ℃。
+        XCTAssertEqual(BatteryTemperature.celsius(fromRaw: 3105, scale: .deciKelvin) ?? .nan,
+                       37.35, accuracy: 0.001)
+        // Apple silicon：0.01℃ → ℃。
+        XCTAssertEqual(BatteryTemperature.celsius(fromRaw: 3105, scale: .centiCelsius) ?? .nan,
+                       31.05, accuracy: 0.001)
+
+        // 超出合理区间（-20…80℃）的读数一律视为未知。
+        XCTAssertNil(BatteryTemperature.celsius(fromRaw: 12_345, scale: .deciKelvin))
+        XCTAssertNil(BatteryTemperature.celsius(fromRaw: 12_345, scale: .centiCelsius))
+        XCTAssertNil(BatteryTemperature.celsius(fromRaw: 0, scale: .deciKelvin), "0K = -273℃ 不可能")
+
+        // 旧落盘值 = 注册表原始值，读取时按量纲还原成 0.1℃ 定点。
+        XCTAssertEqual(BatteryTemperature.repairedDeci(3105, scale: .deciKelvin), 374)
+        XCTAssertEqual(BatteryTemperature.repairedDeci(3105, scale: .centiCelsius), 311)
+        // 已是合法新值的行原样保留。
+        XCTAssertEqual(BatteryTemperature.repairedDeci(374, scale: .deciKelvin), 374)
+        XCTAssertEqual(BatteryTemperature.repairedDeci(0, scale: .centiCelsius), 0)
+        // 还原后仍不可能 → 未知。
+        XCTAssertNil(BatteryTemperature.repairedDeci(12_345, scale: .deciKelvin))
+        XCTAssertNil(BatteryTemperature.repairedDeci(-5000, scale: .deciKelvin))
     }
 
     /// 空列表示未知，非空的非法整数必须让整行作废（不能猜成 0）。

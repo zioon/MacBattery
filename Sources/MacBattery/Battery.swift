@@ -1,6 +1,7 @@
 import Foundation
 import IOKit
 import IOKit.ps
+import MacBatteryCore
 
 /// 电池信息读取。全部采用 macOS 官方公开 API，无需 root 权限。
 /// 注册表读取既可能来自后台串行采样队列，也可能来自主线程入口（电源事件补采样 / 健康日志），
@@ -150,9 +151,11 @@ enum BatteryReader {
 
         // 时间敏感遥测：温度 / 当前容量 / 是否充满。与上面共用同一次属性读取，
         // 不新增 IOKit 调用。取不到一律用 nil 表示「未知」，不伪造 0。
-        // Temperature 的单位是 0.1℃，故除以 10 转成 ℃。
+        // `Temperature` 的量纲随硬件不同（Intel 0.1K / Apple silicon 0.01℃），
+        // 早期版本一律当 0.1℃ 除以 10，导致 Intel 机型显示成 310℃ 量级
+        //（换算与旧落盘数据的修正见 `BatteryTemperature`）。
         let temperature: Double? = props["Temperature"] != nil
-            ? Double(intValue(props["Temperature"])) / 10.0
+            ? BatteryTemperature.celsius(fromRaw: intValue(props["Temperature"]))
             : nil
         let capacity = intValue(props["AppleRawCurrentCapacity"])
         return BatteryStatus(isCharging: isCharging,

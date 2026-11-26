@@ -36,7 +36,11 @@ public struct PowerSampleRecord: Equatable {
     public var memoryPercent: Int
     /// 估算整机功率 ×1000（W）
     public var systemMilliWatts: Int
-    /// 电池温度 ×10（0.1℃，`Temperature` 原始量纲）。`nil` = 未知（旧行 / 机型不提供）。
+    /// 电池温度 ×10（0.1℃ 定点）。`nil` = 未知（旧行 / 机型不提供）。
+    ///
+    /// 注册表原始读数的量纲随硬件不同，换算见 `BatteryTemperature`；
+    /// v1.5.0 最初一律按 0.1℃ 处理，旧落盘值等于注册表原始值（偏大 10 倍），
+    /// 读取时由 `BatteryTemperature.repairedDeci` 修正。
     public var temperatureDeciCelsius: Int?
     /// 剩余时间估算（分钟）：-1 = 系统仍在估算，-2 = 接通电源（不限），其余 = 分钟。
     /// `nil` = 未知（旧行）。
@@ -291,6 +295,7 @@ public enum PowerLogEncoding {
     ///（+温度 / 剩余时间 / 当前容量 / 是否充满）。缺失的尾列一律读成 `nil`（未知），
     /// 绝不默认成 0 / false —— 否则「旧数据未记录」会被图表画成 0℃ / 用电池。
     /// 后加列允许空串（同样表示未知），但非空时必须是合法整数。
+    /// 温度列还会经 `BatteryTemperature.repairedDeci` 还原 v1.5.0 早期的原始量纲错值。
     public static func parseV2(_ line: Substring) -> PowerSampleRecord? {
         let parts = line.split(separator: ",", omittingEmptySubsequences: false)
         guard (9...14).contains(parts.count),
@@ -340,7 +345,8 @@ public enum PowerLogEncoding {
                                  memoryPercent: min(100, max(0, memory)),
                                  systemMilliWatts: max(0, systemWatts),
                                  externalPower: externalPower,
-                                 temperatureDeciCelsius: temperature.value,
+                                 temperatureDeciCelsius: temperature.value
+                                     .flatMap { BatteryTemperature.repairedDeci($0) },
                                  remainingMinutes: remaining.value,
                                  currentCapacityMilliAmpHours: capacity.value.map { max(0, $0) },
                                  fullyCharged: fullyCharged)
