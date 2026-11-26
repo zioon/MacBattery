@@ -249,9 +249,9 @@ final class PowerLogger: ObservableObject {
                 guard let self, self.generation == gen else { return }
                 self.isLoadingOlder = false
                 guard !page.samples.isEmpty else {
-                    // 没有更早的数据了（已到文件头 / 读取预算耗尽）。标记后不再请求，
-                    // 否则拖动到边界时会持续空读磁盘。
-                    self.reachedHistoryStart = true
+                    // 只有磁盘确实读到文件头才锁定；IO 失败 / 预算耗尽造成的空页
+                    // 留给下一次拖动重试，不能永久关闭回溯。
+                    if page.reachedStart { self.reachedHistoryStart = true }
                     return
                 }
                 // 页内记录都严格早于 samples.first，直接前插即为有序，
@@ -293,6 +293,25 @@ private final class PowerLogStore {
     private var handle: FileHandle?
     private var headerWritten = false
 
+    /// 分页倒读游标（每个文件一个）。
+    ///
+    /// **没有它时，每次「向更早一页」都要从文件尾重新扫一遍已加载的较新区间**：
+    /// 第 k 页要跳过的字节数随已加载页数线性增长（≈ (20000 + (k-1)×10000) 行）。
+    /// v1 全精度行约 160 字节，累计跳过在 k≈28 页（约 40 小时历史）时超过
+    /// `readTail` 的 48MB 上限，于是**整页都被 `beforeMs` 过滤成空**。
+    /// 空页又让 `loadOlderHistory` 把 `reachedHistoryStart` 永久置真（见该方法），
+    /// 之后无论怎么拖都不再加载 —— v1.5.0 真机「更早历史拖不出来」即此。
+    private struct ReadCursor {
+        /// 该文件已返回的最早记录时间（毫秒）。续读时只取严格早于此的行，避免重复。
+        var anchorMs: Int
+        /// 已读完区间的起点（字节）。下次从这里继续向前倒读，而不是从文件尾重扫。
+        var offset: Int
+    }
+    /// 仅在 ioQueue 上访问。
+    private var cursors: [String: ReadCursor] = [:]
+    /// 已确认读到文件头（或文件不存在）的文件，之后不再扫描。仅在 ioQueue 上访问。
+    private var exhaustedFiles: Set<String> = []
+
     private func logFolder() -> URL {
         let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first ?? FileManager.default.temporaryDirectory
@@ -331,6 +350,9 @@ private final class PowerLogStore {
             }
             handle = nil
             headerWritten = false
+            // 文件被删了，游标必须作废，否则下次分页会从旧偏移量读到错误位置。
+            cursors.removeAll()
+            exhaustedFiles.removeAll()
             for url in [self.fileURL, self.legacyFileURL] {
                 // 文件本就不存在时视为已达成目标，不记错误，避免 reset 时刷无意义日志。
                 if FileManager.default.fileExists(atPath: url.path) {
@@ -424,14 +446,18 @@ private final class PowerLogStore {
         // 字节预算在两个文件间分摊，各占一半：单个文件仍保留分块倒读的短路能力，
         // 又不会让庞大的 v1 遗留文件把 v2 的读取额度吃光。
         let perFileLimit = max(1, limit / 2)
-        let v2 = readTail(fileURL: fileURL, limit: perFileLimit, parse: PowerLogEncoding.parseV2).records
-        let v1 = readTail(fileURL: legacyFileURL, limit: perFileLimit, parse: PowerLogEncoding.parseV1).records
+        let v2 = readTail(fileURL: fileURL, limit: perFileLimit, parse: PowerLogEncoding.parseV2)
+        let v1 = readTail(fileURL: legacyFileURL, limit: perFileLimit, parse: PowerLogEncoding.parseV1)
+        // 记住两个文件这次读到的位置：后续「向更早分页」从这里续读，
+        // 否则每页都要重扫一遍新建的较新区间（48MB 预算会被白白耗尽）。
+        recordCursor(for: fileURL, read: v2)
+        recordCursor(for: legacyFileURL, read: v1)
 
         // 同一时刻可能同时存在于 v1 与 v2（升级边界附近），按时间戳去重：
         // 时间戳相同时 v2 覆盖 v1（定点精度已收敛，且它是同一事实的最终形态）。
         var byTime: [Int: PowerSampleRecord] = [:]
-        for r in v1 { byTime[r.epochMilliseconds] = r }
-        for r in v2 { byTime[r.epochMilliseconds] = r }
+        for r in v1.records { byTime[r.epochMilliseconds] = r }
+        for r in v2.records { byTime[r.epochMilliseconds] = r }
 
         return byTime.values
             .sorted { $0.epochMilliseconds < $1.epochMilliseconds }
@@ -445,10 +471,10 @@ private final class PowerLogStore {
     /// 倒读时跳过不早于 `beforeMs` 的行，并且 `reachedStart` 必须两个文件都成立。
     private func readOlderHistory(beforeMs: Int, limit: Int) -> OlderPage {
         let perFileLimit = max(1, limit / 2)
-        let v2 = readTail(fileURL: fileURL, limit: perFileLimit, beforeMs: beforeMs,
-                          parse: PowerLogEncoding.parseV2)
-        let v1 = readTail(fileURL: legacyFileURL, limit: perFileLimit, beforeMs: beforeMs,
-                          parse: PowerLogEncoding.parseV1)
+        let v2 = readOlderPage(for: fileURL, limit: perFileLimit, beforeMs: beforeMs,
+                               parse: PowerLogEncoding.parseV2)
+        let v1 = readOlderPage(for: legacyFileURL, limit: perFileLimit, beforeMs: beforeMs,
+                               parse: PowerLogEncoding.parseV1)
 
         var byTime: [Int: PowerSampleRecord] = [:]
         for r in v1.records { byTime[r.epochMilliseconds] = r }
@@ -461,26 +487,78 @@ private final class PowerLogStore {
         return OlderPage(samples: samples, reachedStart: v1.reachedStart && v2.reachedStart)
     }
 
+    /// 读取单个文件「下一页更早历史」，并维护分页游标。
+    private func readOlderPage(for url: URL, limit: Int, beforeMs: Int,
+                               parse: (Substring) -> PowerSampleRecord?) -> TailRead {
+        let key = url.path
+        if exhaustedFiles.contains(key) {
+            return TailRead(records: [], reachedStart: true, resumeOffset: 0, failed: false)
+        }
+        // 游标停在请求边界之前（anchor ≤ before）时才能直接续读；
+        // 否则该文件里比 before 更早的部分还没扫到，从文件尾重新定位（这类文件通常较小）。
+        let cursor = cursors[key]
+        let canResume = cursor.map { $0.anchorMs <= beforeMs } ?? false
+        let read = readTail(fileURL: url,
+                            limit: limit,
+                            beforeMs: beforeMs,
+                            startOffset: canResume ? cursor?.offset : nil,
+                            parse: parse)
+        if read.failed { return read }
+        if let oldest = read.records.first?.epochMilliseconds {
+            // 页内最早的一条成为新的锚点，下次只取严格早于它的行。
+            cursors[key] = ReadCursor(anchorMs: oldest, offset: read.resumeOffset)
+        } else if read.reachedStart {
+            exhaustedFiles.insert(key)
+            cursors.removeValue(forKey: key)
+        } else if let cursor, canResume {
+            // 扫满预算却一条都没取到（理论上不会发生）：把游标前移，避免原地空转。
+            cursors[key] = ReadCursor(anchorMs: cursor.anchorMs, offset: read.resumeOffset)
+        }
+        return read
+    }
+
+    /// 记录某文件本次读到的位置，供后续「向更早分页」续读。
+    private func recordCursor(for url: URL, read: TailRead) {
+        guard !read.failed, let oldest = read.records.first?.epochMilliseconds else { return }
+        cursors[url.path] = ReadCursor(anchorMs: oldest, offset: read.resumeOffset)
+        exhaustedFiles.remove(url.path)
+    }
+
+    /// 单文件倒读的结果。
+    private struct TailRead {
+        /// 本次解析出的记录（升序）。
+        var records: [PowerSampleRecord]
+        /// 是否已倒读到文件开头（未因条数 / 字节预算提前停止）。
+        var reachedStart: Bool
+        /// 扫描停止处的字节位置：下次从这里继续向前倒读即可跳过已读区间。
+        var resumeOffset: Int
+        /// 是否发生过 IO 失败（失败时不要信任游标）。
+        var failed: Bool
+    }
+
     /// 从单个 CSV 尾部倒序读取若干完整行并解析（升序）。
     ///
     /// - Parameters:
     ///   - beforeMs: 只收集时间戳**严格早于**该毫秒值的行（nil = 不限制）。
-    ///     用于「向更早分页」：从文件尾往前扫，跳过已加载的较新部分。
+    ///     用于「向更早分页」：跳过已加载的较新部分。
+    ///   - startOffset: 从该字节位置开始向前倒读（nil = 从文件尾开始）。
+    ///     分页时传入上一页记录的 `resumeOffset`，避免每页重扫整个较新区间。
     ///   - parse: 行解析器（v1 / v2 各一个）。返回 nil 的行（残行、表头、格式不符）被跳过。
-    /// - Returns: 解析出的记录（升序）以及是否已倒读到文件开头。
     private func readTail(fileURL: URL,
                          limit: Int,
                          beforeMs: Int? = nil,
-                         parse: (Substring) -> PowerSampleRecord?) -> (records: [PowerSampleRecord], reachedStart: Bool) {
+                         startOffset: Int? = nil,
+                         parse: (Substring) -> PowerSampleRecord?) -> TailRead {
         guard let attr = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
               let size = (attr[.size] as? NSNumber)?.intValue, size > 0 else {
             // 文件不存在 / 为空：这个文件里没有可读的历史。
-            return ([], true)
+            return TailRead(records: [], reachedStart: true, resumeOffset: 0, failed: false)
         }
 
         var result: [PowerSampleRecord] = []
         let chunk = 1 << 20
-        var offset = size
+        // 从头续读时 offset 从文件尾开始；文件被截短等异常情况下夹到当前大小。
+        var offset = min(startOffset ?? size, size)
         var readSoFar = 0
         var leftover: Substring = ""
         // 区分「读取失败」与「真的因文件过大被截断」：原先两者都落在同一条
@@ -545,6 +623,9 @@ private final class PowerLogStore {
         // 只有「整份读完且未因条数上限提前停下」才算到达文件头：
         // 停在条数上限时当前块里可能还有更早的行未解析，下一次分页仍需继续。
         let reachedStart = offset == 0 && result.count < limit && !readFailed
-        return (result.sorted { $0.epochMilliseconds < $1.epochMilliseconds }, reachedStart)
+        return TailRead(records: result.sorted { $0.epochMilliseconds < $1.epochMilliseconds },
+                        reachedStart: reachedStart,
+                        resumeOffset: offset,
+                        failed: readFailed)
     }
 }
