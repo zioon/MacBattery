@@ -191,7 +191,10 @@ final class PowerFlowEstimateTests: XCTestCase {
 
         XCTAssertEqual(estimate.discharge.usedMilliAmpHours, 60.0 / 3.6, accuracy: 1e-6)
         XCTAssertEqual(estimate.charge.chargedMilliAmpHours, 120.0 / 3.6, accuracy: 1e-6)
-        XCTAssertEqual(estimate.plugged.energyWattHours, 5 * 60 / 3600, accuracy: 1e-9)
+        // 接电能耗覆盖充电段（10 W）与接电未充电段（5 W）各 60s。
+        let expectedEnergy = 10.0 * 60 / 3600 + 5.0 * 60 / 3600
+        XCTAssertEqual(estimate.plugged.energyWattHours, expectedEnergy, accuracy: 1e-9)
+        XCTAssertEqual(estimate.plugged.pluggedSeconds, 120, accuracy: 1e-9)
         // 混合窗口：三类都不是「纯」的，因此不给满充估算与偏差对比。
         XCTAssertFalse(estimate.discharge.isPureDischarge)
         XCTAssertFalse(estimate.charge.isPureCharge)

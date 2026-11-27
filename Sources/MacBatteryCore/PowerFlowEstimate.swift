@@ -273,7 +273,10 @@ public enum PowerFlowIntegrator {
                     case .discharging:
                         integrateCapacity(prev, sample, dt: dt, into: &dischargeTotals)
                     case .charging:
+                        // 充电既是「充入容量」也是「接电能耗」：两条口径不同，
+                        // 同一段同时累计，互不排斥。
                         integrateCapacity(prev, sample, dt: dt, into: &chargeTotals)
+                        integrateEnergy(prev, sample, dt: dt, into: &pluggedTotals)
                     case .pluggedIdle:
                         integrateEnergy(prev, sample, dt: dt, into: &pluggedTotals)
                     case .unknown:
@@ -298,7 +301,7 @@ public enum PowerFlowIntegrator {
             isPureCharge: isPure(count: count, seen: seen, state: .charging))
         let plugged = PluggedEnergyEstimate(
             totals: pluggedTotals,
-            isPurePlugged: isPure(count: count, seen: seen, state: .pluggedIdle))
+            isPurePlugged: isPluggedOnly(count: count, seen: seen))
 
         return PowerFlowEstimate(discharge: discharge,
                                  charge: charge,
@@ -359,6 +362,12 @@ public enum PowerFlowIntegrator {
     private static func isPure(count: Int, seen: Set<PowerFlowState>,
                                state: PowerFlowState) -> Bool {
         count >= 2 && seen.count == 1 && seen.contains(state)
+    }
+
+    /// 窗口内是否全在接电（充电也算接电），用于「接电能耗」的口径说明。
+    private static func isPluggedOnly(count: Int, seen: Set<PowerFlowState>) -> Bool {
+        guard count >= 2, !seen.isEmpty else { return false }
+        return seen.allSatisfy { $0 == .charging || $0 == .pluggedIdle }
     }
 
     private static func isPlausibleVoltage(_ voltage: Double) -> Bool {
