@@ -104,6 +104,20 @@ struct PowerSample {
     }
 }
 
+/// 让内存采样点直接参与纯逻辑层的能量流积分（见 `PowerFlowEstimate`）。
+///
+/// 只是字段映射，不改变采样语义：`chargingVoltage` / `chargingCurrent` 在放电时
+/// 同样是有效的电池电压 / 电流读数（方向由 `externalPower` / `isCharging` 判定）。
+extension PowerSample: PowerFlowSample {
+    var flowTimestamp: TimeInterval { t.timeIntervalSince1970 }
+    var flowVoltage: Double { chargingVoltage }
+    var flowCurrent: Double { chargingCurrent }
+    var flowSystemWatts: Double { systemWatts }
+    var flowExternalPower: Bool? { externalPower }
+    var flowIsCharging: Bool { isCharging }
+    var flowCapacityMilliAmpHours: Int? { currentCapacity }
+}
+
 /// 日志中枢：把每次采样追加进内存环形缓冲（供图表实时使用），
 /// 并异步持久化到 CSV（`~/Library/Application Support/MacBattery/power_log_v2.csv`），
 /// 跨会话留存历史，图表打开时回填最近一段历史。

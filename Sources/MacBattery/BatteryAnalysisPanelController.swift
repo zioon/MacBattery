@@ -31,7 +31,7 @@ final class BatteryAnalysisPanelController: NSWindowController {
         panel.acceptsMouseMovedEvents = true
         // 普通窗口层级：不做置顶，避免遮挡其它应用。
         panel.collectionBehavior = []
-        panel.contentMinSize = NSSize(width: 620, height: 380)
+        panel.contentMinSize = NSSize(width: 620, height: 440)
 
         let hosting = NSHostingView(rootView: BatteryAnalysisView(logger: logger,
                                                                  healthLogger: healthLogger))

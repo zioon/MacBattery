@@ -55,11 +55,12 @@ struct BatteryAnalysisView: View {
     var body: some View {
         VStack(spacing: 8) {
             metricBar
+            capacityEstimateBar
             chartArea
             presetBar
         }
         .padding(12)
-        .frame(minWidth: 620, minHeight: 380)
+        .frame(minWidth: 620, minHeight: 440)
 
         // 实时跟随：来一条新样本就前推右缘。
         .onChange(of: logger.samples.last?.t) { t in
@@ -84,6 +85,9 @@ struct BatteryAnalysisView: View {
         let title: String
         let value: String
         let color: Color
+        /// 值下方的补充说明（如「系统下降 1,180 mAh · 偏差 +4.6%」）。
+        /// 为 nil 时不渲染，保持其它卡片原有高度。
+        var note: String? = nil
     }
 
     private var metricBar: some View {
@@ -115,6 +119,13 @@ struct BatteryAnalysisView: View {
                 .foregroundColor(m.color)
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
+            if let note = m.note {
+                Text(note)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 6)
@@ -178,6 +189,171 @@ struct BatteryAnalysisView: View {
             Metric(title: L("analysis.current"), value: current,
                    color: AnalysisPalette.current)
         ]
+    }
+
+    // MARK: - 能量流统计（放电已用 / 充电充入 / 接电能耗）
+
+    /// 当前可见时间窗内的样本，口径与 `buildDraw` 完全一致。
+    ///
+    /// 刻意返回 `ArraySlice` 而不是 `Array`：悬停移动会让 `body` 每帧重算，
+    /// 24h 窗口下可能有十几万个点，复制整段没有意义。
+    private func visibleSlice() -> ArraySlice<PowerSample> {
+        let startE = endTime.timeIntervalSince1970 - timeRange
+        let endE = endTime.timeIntervalSince1970
+        let samples = logger.samples
+
+        var lo = 0, hi = samples.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if samples[mid].t.timeIntervalSince1970 < startE { lo = mid + 1 } else { hi = mid }
+        }
+        let start = lo
+        lo = start; hi = samples.count
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if samples[mid].t.timeIntervalSince1970 <= endE { lo = mid + 1 } else { hi = mid }
+        }
+        let end = lo
+        return samples[start..<end]
+    }
+
+    /// 一行四张卡：放电已用、充电充入、接电能耗、估算满充。
+    private var capacityEstimateBar: some View {
+        let metrics = capacityEstimateMetrics
+        return HStack(spacing: 8) {
+            ForEach(metrics.indices, id: \.self) { index in
+                metricTile(metrics[index])
+            }
+        }
+    }
+
+    private var capacityEstimateMetrics: [Metric] {
+        let visible = visibleSlice()
+        let flow = PowerFlowIntegrator.estimate(visible)
+        let maxCapacity = healthLogger.samples.last?.maxCapacity
+        return [
+            dischargeMetric(flow.discharge),
+            chargeMetric(flow.charge),
+            pluggedMetric(flow.plugged),
+            fullChargeMetric(flow.discharge, maxCapacity: maxCapacity)
+        ]
+    }
+
+    private func dischargeMetric(_ e: DischargeEstimate) -> Metric {
+        let title = L("analysis.flow.discharge")
+        guard e.hasIntegration else {
+            return Metric(title: title,
+                          value: L("analysis.flow.idle_discharge"),
+                          color: AnalysisPalette.discharge,
+                          note: gapNote(e.gapSeconds))
+        }
+
+        var parts: [String] = []
+        if let drop = e.systemDropMilliAmpHours {
+            parts.append(L("analysis.flow.discharge.drop", mahText(Double(drop))))
+        }
+        if let ratio = e.deviationRatio {
+            parts.append(L("analysis.flow.deviation", percentText(ratio)))
+        }
+        if let gap = gapNote(e.gapSeconds) { parts.append(gap) }
+
+        return Metric(title: title,
+                      value: L("analysis.flow.mah", mahText(e.usedMilliAmpHours)),
+                      color: AnalysisPalette.discharge,
+                      note: parts.isEmpty ? nil : parts.joined(separator: " · "))
+    }
+
+    private func chargeMetric(_ e: ChargeEstimate) -> Metric {
+        let title = L("analysis.flow.charge")
+        guard e.hasIntegration else {
+            return Metric(title: title,
+                          value: L("analysis.flow.idle_charge"),
+                          color: AnalysisPalette.charge,
+                          note: gapNote(e.gapSeconds))
+        }
+
+        var parts: [String] = []
+        if let rise = e.systemRiseMilliAmpHours {
+            parts.append(L("analysis.flow.charge.rise", mahText(Double(rise))))
+        }
+        if let ratio = e.deviationRatio {
+            parts.append(L("analysis.flow.deviation", percentText(ratio)))
+        }
+        if let gap = gapNote(e.gapSeconds) { parts.append(gap) }
+
+        return Metric(title: title,
+                      value: L("analysis.flow.mah", mahText(e.chargedMilliAmpHours)),
+                      color: AnalysisPalette.charge,
+                      note: parts.isEmpty ? nil : parts.joined(separator: " · "))
+    }
+
+    private func pluggedMetric(_ e: PluggedEnergyEstimate) -> Metric {
+        let title = L("analysis.flow.plugged")
+        guard e.hasIntegration else {
+            return Metric(title: title,
+                          value: L("analysis.flow.idle_plugged"),
+                          color: AnalysisPalette.energy,
+                          note: gapNote(e.gapSeconds))
+        }
+
+        var parts: [String] = []
+        if let average = e.averageWatts {
+            parts.append(L("analysis.flow.plugged.average",
+                           LocalizedFormat.number(average, decimals: 1)))
+        }
+        parts.append(ChartAxes.timeText(e.pluggedSeconds))
+        if let gap = gapNote(e.gapSeconds) { parts.append(gap) }
+
+        return Metric(title: title,
+                      value: L("analysis.flow.wh",
+                               LocalizedFormat.number(e.energyWattHours, decimals: 2)),
+                      color: AnalysisPalette.energy,
+                      note: parts.joined(separator: " · "))
+    }
+
+    private func fullChargeMetric(_ e: DischargeEstimate, maxCapacity: Int?) -> Metric {
+        let title = L("analysis.flow.full")
+        let color = AnalysisPalette.health
+
+        guard let full = e.estimatedFullChargeMilliAmpHours else {
+            // 三种不可估算的原因分别说明，避免让用户以为功能坏了。
+            let value: String
+            if e.hasIntegration && e.gapSeconds > 0 {
+                value = L("analysis.flow.full.gap")
+            } else if e.hasIntegration {
+                value = L("analysis.flow.full.mixed")
+            } else {
+                value = L("analysis.flow.idle_discharge")
+            }
+            return Metric(title: title, value: value, color: color)
+        }
+
+        var note: String?
+        if let max = maxCapacity, max > 0 {
+            let ratio = (full - Double(max)) / Double(max)
+            note = L("analysis.flow.full.vs_max", percentText(ratio))
+        }
+        return Metric(title: title,
+                      value: L("analysis.flow.mah", mahText(full)),
+                      color: color,
+                      note: note)
+    }
+
+    /// mAh 数值：取整并跟随区域格式化（千分位）。
+    private func mahText(_ value: Double) -> String {
+        LocalizedFormat.number(value.rounded(), decimals: 0)
+    }
+
+    /// 带符号的百分比数值（不含 %，由文案模板补）：`+4.6` / `-1.2`。
+    private func percentText(_ ratio: Double) -> String {
+        let percent = ratio * 100
+        let text = LocalizedFormat.number(abs(percent), decimals: 1)
+        return (percent < 0 ? "-" : "+") + text
+    }
+
+    private func gapNote(_ seconds: TimeInterval) -> String? {
+        guard seconds > 0 else { return nil }
+        return L("analysis.flow.gap", ChartAxes.timeText(seconds))
     }
 
     /// 剩余时间：保留系统哨兵语义（-1 估算中 / -2 接通电源），其余按分钟转时长文本。
@@ -447,6 +623,10 @@ private enum AnalysisPalette {
     static let voltage = Color(red: 0.66, green: 0.48, blue: 0.95)
     static let current = Color(red: 0.10, green: 0.72, blue: 0.78)
     static let state = Color(red: 0.55, green: 0.57, blue: 0.60)
+    /// 能量流统计卡：放电已用 / 充电充入 / 接电能耗。
+    static let discharge = Color(red: 0.88, green: 0.58, blue: 0.16)
+    static let charge = Color(red: 0.20, green: 0.70, blue: 0.45)
+    static let energy = Color(red: 0.42, green: 0.52, blue: 0.90)
 }
 
 // MARK: - 实际绘图对象

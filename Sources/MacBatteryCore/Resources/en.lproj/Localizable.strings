@@ -155,6 +155,25 @@
 "analysis.window.7d" = "7d";
 "analysis.empty_placeholder" = "No battery data yet (samples accumulate while the app runs)";
 
+/* Battery analysis panel: energy flow (discharge / charge / plugged in) */
+"analysis.flow.discharge" = "Discharged";
+"analysis.flow.charge" = "Charged";
+"analysis.flow.plugged" = "Plugged-in energy";
+"analysis.flow.plugged.average" = "Avg %@ W";
+"analysis.flow.full" = "Estimated full";
+"analysis.flow.mah" = "%@ mAh";
+"analysis.flow.wh" = "%@ Wh";
+"analysis.flow.discharge.drop" = "System drop %@ mAh";
+"analysis.flow.charge.rise" = "System rise %@ mAh";
+"analysis.flow.deviation" = "Deviation %@%%";
+"analysis.flow.gap" = "Gap %@";
+"analysis.flow.full.vs_max" = "%@%% vs max capacity";
+"analysis.flow.idle_discharge" = "Not discharging";
+"analysis.flow.idle_charge" = "Not charging";
+"analysis.flow.idle_plugged" = "No plugged-in time";
+"analysis.flow.full.gap" = "Gap, not estimated";
+"analysis.flow.full.mixed" = "Includes non-discharge";
+
 /* Widget HUD */
 "hud.unit.watts" = "W";
 "hud.remaining_prefix" = "Left %@";

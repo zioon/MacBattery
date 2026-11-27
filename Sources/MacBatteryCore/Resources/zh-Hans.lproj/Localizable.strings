@@ -155,6 +155,25 @@
 "analysis.window.7d" = "7d";
 "analysis.empty_placeholder" = "暂无电池数据（应用运行后会随采样累积）";
 
+/* 电池分析面板：能量流统计（放电 / 充电 / 接电） */
+"analysis.flow.discharge" = "放电已用";
+"analysis.flow.charge" = "充电充入";
+"analysis.flow.plugged" = "接电能耗";
+"analysis.flow.plugged.average" = "平均 %@ W";
+"analysis.flow.full" = "估算满充";
+"analysis.flow.mah" = "%@ mAh";
+"analysis.flow.wh" = "%@ Wh";
+"analysis.flow.discharge.drop" = "系统下降 %@ mAh";
+"analysis.flow.charge.rise" = "系统上升 %@ mAh";
+"analysis.flow.deviation" = "偏差 %@%%";
+"analysis.flow.gap" = "缺口 %@";
+"analysis.flow.full.vs_max" = "较最大容量 %@%%";
+"analysis.flow.idle_discharge" = "本时段未放电";
+"analysis.flow.idle_charge" = "本时段未充电";
+"analysis.flow.idle_plugged" = "本时段未接电";
+"analysis.flow.full.gap" = "有缺口，不估算";
+"analysis.flow.full.mixed" = "含非放电段";
+
 /* 挂件 HUD */
 "hud.unit.watts" = "W";
 "hud.remaining_prefix" = "剩余 %@";
