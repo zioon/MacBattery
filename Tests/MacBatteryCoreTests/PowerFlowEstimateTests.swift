@@ -45,7 +45,7 @@ final class PowerFlowEstimateTests: XCTestCase {
     }
 
     private func plugged(_ t: TimeInterval, watts: Double = 10.0) -> Point {
-        sample(t, externalPower: true, charging: false, watts: watts)
+        sample(t, watts: watts, externalPower: true, charging: false)
     }
 
     // MARK: - 状态判定
